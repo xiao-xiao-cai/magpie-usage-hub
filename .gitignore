@@ -4,6 +4,8 @@
 !.env.*.example
 config.local.*
 .local/
+/plan/
+/.codegraph/
 .credentials/
 credentials/
 *.key
@@ -13,7 +15,9 @@ credentials/
 
 .magpie-dev/
 usage.jsonl
+usage.jsonl.bak
 usage-feed.jsonl
+usage-feed.jsonl.bak
 .usage-feed-*.jsonl
 *.log
 
@@ -23,6 +27,10 @@ coverage/
 .cache/
 *.tsbuildinfo
 *.tgz
+
+/.venv/
+__pycache__/
+*.pyc
 
 .DS_Store
 Thumbs.db
