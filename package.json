@@ -1,0 +1,26 @@
+{
+  "name": "magpie-usage-hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server": "./server.ts"
+  },
+  "files": [
+    "server.ts",
+    "src/"
+  ],
+  "magpie": {
+    "options": {
+      "enabled": false
+    }
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "typescript": "5.9.3"
+  }
+}
