@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: L0 静态检查
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: 检查本次差异
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
+            BASE_SHA=$(git hash-object -w -t tree /dev/null)
+          elif ! git cat-file -e "$BASE_SHA"; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          fi
+          git diff --check "$BASE_SHA" HEAD
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: '0.12.7'
+          enable-cache: false
+
+      - name: 检查 Markdown 本地链接
+        run: |
+          git ls-files -z -- '*.md' | xargs -0 -r uv run --script .agents/skills/magpie-docs-update/scripts/check_local_links.py --root . --
