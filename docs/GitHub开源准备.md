@@ -15,7 +15,8 @@
 
 ## 发布后的应用内安装
 
-- 通过 GitHub 发布时，把 `package.json`、后台入口和页面资源放在公开仓库的根目录结构中。用户可在 Magpie「插件 → 发现 → 已有想装的？」填入 `github:xiao-xiao-cai/magpie-usage-hub#main` 安装主分支。按标签发布时，使用相应的标签替换 `main`。[Magpie 插件安装](https://usemagpie.ai/docs/zh/plugins#run)
+- **GitHub Release。** 在发布提交上执行 `npm pack --ignore-scripts`，核对实际归档及 SHA-256。把该归档上传到与包版本对应的 `v<版本>` Release。用户用 npm 安装归档 URL，再把安装后的包目录添加到 Magpie。也可从安装框用 `github:组织/仓库#v<版本>` 安装该标签。[下载与安装](../README.md#安装插件包)
+- **npm 公共注册表。** 有发布权限的维护者使用 `npm publish <已核对的归档> --access public` 发布。用注册表回读核对包名、版本和完整性后，用户可在 Magpie 安装框用 `npm:magpie-usage-hub` 安装。以 npm 包名安装的版本按注册表版本号提示更新。[npm 发布文档](https://docs.npmjs.com/creating-and-publishing-unscoped-public-packages/) · [Magpie 插件安装与更新](https://usemagpie.ai/docs/zh/plugins#run)
 
 ## 公开和确认结果
 

@@ -12,10 +12,22 @@ Magpie Usage Hub 将多个 Magpie 实例的模型调用用量汇总到一个中�
 
 ## 安装与试用
 
-1. 在来源和中心安装同一个插件包。在 Magpie 打开「插件 → 发现 → 已有想装的？」，输入 `github:xiao-xiao-cai/magpie-usage-hub#main`。[Magpie 官方安装语法](https://usemagpie.ai/docs/zh/plugins#run)
-2. 在中心选择「中心：接收并汇总」，设置中心回环网关和来源可访问的受限接收入口。启用并保存后，从中心 Web 的「用量看板 → 来源管理」添加来源，填写专用模型 Key 的 ID 和来源的本机供应商 ID，启用采集并生成配对码。[中心接入与网络权限](docs/07-部署接入与运行维护.md#启用中心接收)
-3. 将配对码写入来源宿主可读的受保护文件。在来源选择「来源：采集并上报」和「中心管理（一次配对）」，填写本机回环网关、来源可访问的中心接收地址及配对码文件路径，启用并保存。[来源配对配置](docs/06-配置与诊断页面设计.md#托管来源设置)
-4. 在来源 Web 诊断确认首次游标就绪，再用专用模型 Key 经指定供应商发起一次调用，在中心看板核对上报明细。[试用对账](docs/07-部署接入与运行维护.md#登记来源并对账)
+### 安装插件包
+
+来源和中心使用同一版本。在 Magpie 宿主可长期读取的目录中，用 npm 安装 GitHub Release 的固定版本，再把包目录添加到 Magpie。[`v0.4.0` 发布页](https://github.com/xiao-xiao-cai/magpie-usage-hub/releases/tag/v0.4.0)
+
+```sh
+npm install --prefix ./usage-hub https://github.com/xiao-xiao-cai/magpie-usage-hub/releases/download/v0.4.0/magpie-usage-hub-0.4.0.tgz
+magpie plugin add ./usage-hub/node_modules/magpie-usage-hub
+```
+
+Docker 部署可先在宿主机用 npm 安装到持久挂载目录，再将容器内的包根路径添加到 Magpie。也可在 Magpie「插件 → 发现 → 已有想装的？」输入 `github:xiao-xiao-cai/magpie-usage-hub#v0.4.0` 安装同一版本。[Magpie 官方安装语法](https://usemagpie.ai/docs/zh/plugins#run)
+
+### 配置来源与中心
+
+1. 在中心选择「中心：接收并汇总」，设置中心回环网关和来源可访问的受限接收入口。启用并保存后，从中心 Web 的「用量看板 → 来源管理」添加来源，填写专用模型 Key 的 ID 和来源的本机供应商 ID，启用采集并生成配对码。[中心接入与网络权限](docs/07-部署接入与运行维护.md#启用中心接收)
+2. 将配对码写入来源宿主可读的受保护文件。在来源选择「来源：采集并上报」和「中心管理（一次配对）」，填写本机回环网关、来源可访问的中心接收地址及配对码文件路径，启用并保存。[来源配对配置](docs/06-配置与诊断页面设计.md#托管来源设置)
+3. 在来源 Web 诊断确认首次游标就绪，再用专用模型 Key 经指定供应商发起一次调用，在中心看板核对上报明细。[试用对账](docs/07-部署接入与运行维护.md#登记来源并对账)
 
 ## 文档
 

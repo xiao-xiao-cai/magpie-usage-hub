@@ -3,7 +3,10 @@
   "version": "0.4.0",
   "description": "Manage reporting sources and view gateway usage across Magpie instances.",
   "keywords": ["magpie-page"],
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiao-xiao-cai/magpie-usage-hub.git"
+  },
   "type": "module",
   "exports": {
     "./server": "./server.ts"
