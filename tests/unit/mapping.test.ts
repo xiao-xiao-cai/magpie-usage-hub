@@ -49,6 +49,43 @@ test('maps approved fields with the original time and stable ID', () => {
   expect(report({ id: 'def' }).rid).not.toBe(report().rid)
 })
 
+test('keeps a replay stable and namespaces identical row IDs by source', () => {
+  const original = report()
+  const replayed = report({ seq: 2 })
+  const otherSourceId = 'ec2926e7-9e69-4897-ab71-15091df06c91'
+  const otherSource = mapUsageRow(sourceRow, otherSourceId, callerKeyId)
+
+  expect(replayed).toEqual(original)
+  expect(otherSource?.rid).toBe(original.rid.replace(sourceId, otherSourceId))
+  expect(otherSource?.rid).not.toBe(original.rid)
+})
+
+test('preserves source timestamps on either side of local midnight', () => {
+  const beforeMidnight = '2026-11-25T23:59:59.987654321+08:00'
+  const afterMidnight = '2026-11-26T00:00:00.123456789+08:00'
+
+  expect(report({ id: 'fixture-before-midnight', t: beforeMidnight }).t).toBe(beforeMidnight)
+  expect(report({ id: 'fixture-after-midnight', t: afterMidnight }).t).toBe(afterMidnight)
+})
+
+test('maps metered attempts of a fallback from their individual ledger rows', () => {
+  const routing = { route_id: 'fixture-route', req: 'fixture-alias' }
+  const failed = report({
+    ...routing, id: 'fixture-failed-attempt', provider: 'fixture-first', status: 503,
+    handed_on: true, in: 3, out: 0, priced: false,
+  })
+  const succeeded = report({
+    ...routing, id: 'fixture-fallback-attempt', provider: 'fixture-fallback', tries: 2,
+  })
+
+  expect(failed).toMatchObject({ provider: 'fixture-first', status: 503, in: 3, out: 0 })
+  expect(succeeded).toMatchObject({ provider: 'fixture-fallback', status: 200, in: 3, out: 2, cost: 0 })
+  expect(failed.rid).not.toBe(succeeded.rid)
+  expect(failed).not.toHaveProperty('cost')
+  expect(failed).not.toHaveProperty('handed_on')
+  expect(succeeded).not.toHaveProperty('tries')
+})
+
 test('excludes other origins and shared rows and rejects out-of-scope gateway rows', () => {
   expect(map({ origin: 'session', id: undefined })).toBeNull()
   expect(map({ origin: 'reported' })).toBeNull()
