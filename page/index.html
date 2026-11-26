@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Magpie Usage Hub</title>
+  <link rel="stylesheet" href="configuration.css">
+  <script defer src="_magpie/bridge.js"></script>
+  <script defer src="options.js"></script>
+  <script defer src="configuration.js"></script>
+</head>
+<body>
+  <main class="layout">
+    <header class="page-header">
+      <div>
+        <h1>用量同步</h1>
+        <p class="muted" id="diagnostic-guide">在 Magpie Web 的插件页打开运行诊断。</p>
+      </div>
+      <a id="diagnostic-link" class="action-link" hidden>打开运行诊断</a>
+    </header>
+
+    <section class="panel" aria-labelledby="settings-title">
+      <header class="section-header">
+        <h2 id="settings-title">同步配置</h2>
+        <button id="reload-options" type="button">重新读取</button>
+      </header>
+      <form id="settings-form">
+        <fieldset id="settings-fields" disabled aria-labelledby="settings-title">
+          <label class="check-row" for="enabled">
+            <input id="enabled" type="checkbox">
+            启用连续同步
+          </label>
+          <div class="fields">
+            <div class="field">
+              <label for="sourceGatewayUrl">本机源网关</label>
+              <input id="sourceGatewayUrl" type="url" placeholder="http://127.0.0.1:3425" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="sourceCallerKeyId">专用测试 Key ID</label>
+              <input id="sourceCallerKeyId" type="text" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="centralGatewayUrl">中心网关</label>
+              <input id="centralGatewayUrl" type="url" placeholder="https://magpie.example.com" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="centralKeyFile">上报凭据文件路径 <span id="key-state" class="muted"></span></label>
+              <input id="centralKeyFile" type="password" autocomplete="new-password" spellcheck="false" aria-describedby="key-file-hint">
+              <small id="key-file-hint">填写宿主上的绝对路径。留空沿用已配置的文件。</small>
+            </div>
+            <div class="field">
+              <label for="initialMode">首次起点</label>
+              <select id="initialMode">
+                <option value="now">从现在开始</option>
+                <option value="start">读取可见历史</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="pollIntervalSec">轮询间隔（秒）</label>
+              <input id="pollIntervalSec" type="number" min="5" max="900" step="1" value="60">
+            </div>
+            <div class="field">
+              <label for="requestTimeoutSec">单次请求超时（秒）</label>
+              <input id="requestTimeoutSec" type="number" min="1" max="120" step="1" value="30">
+            </div>
+          </div>
+          <div class="actions">
+            <button type="button" class="primary" id="save-settings">保存设置</button>
+            <button id="rebase-options" type="button" hidden>载入最新设置并保留草稿</button>
+          </div>
+        </fieldset>
+      </form>
+      <p id="settings-message" class="feedback" role="status" aria-live="polite">正在读取设置…</p>
+      <ul id="options-difference" class="difference" hidden></ul>
+      <p id="settings-revision" class="revision" hidden>保存修订 <code id="revision-value"></code></p>
+    </section>
+
+    <section class="panel" aria-labelledby="recovery-title">
+      <h2 id="recovery-title">向原中心回填</h2>
+      <p class="muted">可补传源账本仍可见的记录。区间包含起点，截止时刻不计入。</p>
+      <form id="recovery-form">
+        <fieldset id="recovery-fields" disabled aria-labelledby="recovery-title">
+          <div class="fields recovery-fields">
+            <div class="field">
+              <label for="recovery-kind">回填方式</label>
+              <select id="recovery-kind">
+                <option value="range">补齐指定时间段</option>
+                <option value="cursor">恢复已过期或重置的游标</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="recovery-from">起点（本地时间）</label>
+              <input id="recovery-from" type="datetime-local" step="1" required>
+            </div>
+            <div class="field" id="recovery-end-field">
+              <label for="recovery-to">截止（本地时间）</label>
+              <input id="recovery-to" type="datetime-local" step="1">
+            </div>
+          </div>
+          <div class="actions">
+            <button type="button" class="primary" id="review-recovery">核对回填范围</button>
+          </div>
+        </fieldset>
+      </form>
+      <p id="recovery-hint" class="feedback">请先读取同步设置。</p>
+      <p id="recovery-message" class="feedback" role="status" aria-live="polite"></p>
+      <div id="submitted-request" class="request" hidden>
+        <p id="submitted-request-text"></p>
+        <button id="withdraw-request" type="button">撤回待受理请求</button>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="confirmation" aria-labelledby="confirmation-title" aria-describedby="confirmation-note">
+    <h2 id="confirmation-title"></h2>
+    <dl class="review" id="confirmation-fields" hidden></dl>
+    <p class="muted" id="confirmation-note"></p>
+    <div class="actions">
+      <button id="confirm-action" class="primary" type="button"></button>
+      <button id="cancel-action" type="button" autofocus>取消</button>
+    </div>
+  </dialog>
+</body>
+</html>

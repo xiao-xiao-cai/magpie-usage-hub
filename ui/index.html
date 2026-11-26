@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>用量同步诊断</title>
+  <link rel="stylesheet" href="status.css">
+  <script defer src="status.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <a href="../../index.html">返回配置</a>
+        <h1>用量同步诊断</h1>
+      </div>
+      <button id="refresh" type="button">刷新</button>
+    </header>
+    <p id="notice" role="status">正在读取后台状态…</p>
+    <div id="status" hidden>
+      <section aria-labelledby="runtime-heading">
+        <h2 id="runtime-heading">后台任务</h2>
+        <dl>
+          <div><dt>状态</dt><dd id="phase"></dd></div>
+          <div><dt>上报凭据文件</dt><dd id="credential"></dd></div>
+          <div><dt>宿主读取的修订</dt><dd id="loaded-revision" class="revision"></dd></div>
+          <div><dt>同步任务采用的修订</dt><dd id="applied-revision" class="revision"></dd></div>
+          <div><dt>最近尝试</dt><dd id="last-attempt"></dd></div>
+          <div><dt>最近整页确认</dt><dd id="last-confirmed"></dd></div>
+          <div><dt>下次重试</dt><dd id="retry"></dd></div>
+        </dl>
+        <p id="failure" class="failure" hidden></p>
+      </section>
+      <section aria-labelledby="page-heading">
+        <h2 id="page-heading">最近一页</h2>
+        <p id="last-page"></p>
+      </section>
+      <section aria-labelledby="recovery-heading">
+        <h2 id="recovery-heading">回填进度</h2>
+        <p id="no-recovery">暂无回填记录。</p>
+        <dl id="recovery" hidden>
+          <div><dt>状态</dt><dd id="recovery-phase"></dd></div>
+          <div><dt>方式</dt><dd id="recovery-kind"></dd></div>
+          <div><dt>起点（含）</dt><dd id="recovery-from"></dd></div>
+          <div><dt>截止（不含）</dt><dd id="recovery-to"></dd></div>
+          <div><dt>确认进度</dt><dd id="recovery-count"></dd></div>
+        </dl>
+        <p id="recovery-failure" class="failure" hidden></p>
+      </section>
+      <p class="muted">时间按浏览器本地时区显示。回填范围受源账本当前可见历史限制。</p>
+    </div>
+  </main>
+</body>
+</html>

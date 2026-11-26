@@ -1,6 +1,6 @@
 {
   "name": "magpie-usage-hub",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -8,9 +8,16 @@
   },
   "files": [
     "server.ts",
-    "src/"
+    "src/",
+    "page/",
+    "ui/"
   ],
   "magpie": {
+    "page": {
+      "title": "Magpie Usage Hub",
+      "file": "page/index.html",
+      "service": { "port": 3493 }
+    },
     "options": {
       "enabled": false
     }

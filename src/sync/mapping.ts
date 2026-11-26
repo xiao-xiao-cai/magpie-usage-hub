@@ -69,7 +69,9 @@ function readTimestamp(value: unknown): string {
   return value
 }
 
-export function mapUsageRow(row: Record<string, unknown>, sourceId: string, callerKeyId: string): ReportRow | null {
+export function mapUsageRow(
+  row: Record<string, unknown>, sourceId: string, callerKeyId: string, includesTime?: (timestamp: string) => boolean,
+): ReportRow | null {
   if (typeof row.origin !== 'string') throw new MappingFailure('invalid_origin')
   if (row.origin !== 'gateway') return null
   if (row.computer !== undefined && typeof row.computer !== 'string') {
@@ -77,11 +79,13 @@ export function mapUsageRow(row: Record<string, unknown>, sourceId: string, call
   }
   if (row.computer) return null
   if (row.callerKeyId !== callerKeyId) throw new MappingFailure('unexpected_caller_key')
+  const timestamp = readTimestamp(row.t)
+  if (includesTime && !includesTime(timestamp)) return null
   if (typeof row.id !== 'string' || row.id.trim() === '') throw new MappingFailure('invalid_row_id')
 
   const digest = createHash('sha256').update(row.id, 'utf8').digest('hex')
   const report: ReportRow = {
-    t: readTimestamp(row.t),
+    t: timestamp,
     agent: readRequiredText(row, 'agent'),
     provider: readRequiredText(row, 'provider'),
     model: readRequiredText(row, 'model'),

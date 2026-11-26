@@ -255,6 +255,7 @@ test('handoff replays the entire page after a tail failure and a lost receipt', 
     expect(log).toContain('"status":"resumed"')
     expect(log).toContain('"accepted":0,"skipped":201')
     expect(log).not.toContain(reportKey)
+    expect(log).not.toContain('"nextCursor"')
   } finally {
     pendingReceipt.resolve()
     await source.stop(true)

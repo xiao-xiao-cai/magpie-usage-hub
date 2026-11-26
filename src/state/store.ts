@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { lstat, open, readFile, rename, unlink, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
+import { decodeRecoveryRequest, type RecoveryRequest } from '../recovery.ts'
 import { StateError } from './errors.ts'
 
 export { StateError } from './errors.ts'
 
-const version = 1
+const identityVersion = 1
 const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const windowsRenameRetryDelaysMs = [10, 25, 50, 100] as const
 
@@ -16,17 +17,52 @@ export type SyncBinding = Readonly<{
   initialMode: 'now' | 'start'
 }>
 
-type Identity = Readonly<{ version: typeof version; sourceInstanceId: string }>
+type Identity = Readonly<{ version: typeof identityVersion; sourceInstanceId: string }>
 
-export type SyncState = Identity & Readonly<{
-  binding: SyncBinding
+type RecoveryCounts = Readonly<{ pages: number; accepted: number; skipped: number }>
+
+export type RecoveryProgress = RecoveryCounts & Readonly<{
+  request: RecoveryRequest
   cursor: string | null
   lastConfirmedAt: string | null
 }>
 
+const recoveryRejectionCodes = [
+  'recovery_binding_mismatch', 'recovery_no_checkpoint', 'recovery_busy',
+  'recovery_cursor_valid', 'recovery_cursor_incompatible',
+] as const
+
+export type RecoveryRejectionCode = typeof recoveryRejectionCodes[number]
+
+const recoveryScanFailureCodes = ['recovery_scan_cursor_expired', 'recovery_scan_cursor_reset'] as const
+
+export type RecoveryScanFailureCode = typeof recoveryScanFailureCodes[number]
+
+export type RecoveryResult = Readonly<{ request: RecoveryRequest }> & (
+  | (RecoveryCounts & Readonly<{ status: 'complete'; lastConfirmedAt: string }>)
+  | (RecoveryCounts & Readonly<{
+    status: 'failed'
+    reason: RecoveryScanFailureCode
+    lastConfirmedAt: string | null
+    failedAt: string
+  }>)
+  | Readonly<{ status: 'rejected'; reason: RecoveryRejectionCode }>
+)
+
+type RecoveryState = Readonly<{ active: RecoveryProgress | null; results: readonly RecoveryResult[] }>
+
+export type SyncState = Readonly<{
+  version: 1 | 2
+  sourceInstanceId: string
+  binding: SyncBinding
+  cursor: string | null
+  lastConfirmedAt: string | null
+  recovery?: RecoveryState
+}>
+
 type StateFile = 'identity.json' | 'state.json'
 
-type WriteOperations = {
+export type WriteOperations = {
   sync(file: FileHandle): Promise<void>
   rename(source: string, target: string): Promise<void>
 }
@@ -52,13 +88,15 @@ function isTimestamp(value: unknown): value is string {
   return Number.isFinite(date.getTime()) && date.toISOString() === value
 }
 
+function readSourceInstanceId(value: unknown): string {
+  if (typeof value !== 'string' || !uuidV4.test(value)) throw new StateError('state_invalid')
+  return value
+}
+
 function readIdentity(value: unknown): Identity {
   if (!isObject(value) || !Number.isSafeInteger(value.version)) throw new StateError('state_invalid')
-  if (value.version !== version) throw new StateError('state_version_unsupported')
-  if (typeof value.sourceInstanceId !== 'string' || !uuidV4.test(value.sourceInstanceId)) {
-    throw new StateError('state_invalid')
-  }
-  return { version, sourceInstanceId: value.sourceInstanceId }
+  if (value.version !== identityVersion) throw new StateError('state_version_unsupported')
+  return { version: identityVersion, sourceInstanceId: readSourceInstanceId(value.sourceInstanceId) }
 }
 
 function readBinding(value: unknown): SyncBinding {
@@ -71,18 +109,104 @@ function readBinding(value: unknown): SyncBinding {
   return { sourceGatewayUrl, sourceCallerKeyId, centralGatewayUrl, initialMode }
 }
 
-function readState(value: unknown): SyncState {
+function readCount(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new StateError('state_invalid')
+  return value
+}
+
+function readRecoveryCounts(value: Record<string, unknown>): RecoveryCounts {
+  return { pages: readCount(value.pages), accepted: readCount(value.accepted), skipped: readCount(value.skipped) }
+}
+
+function readProgressConfirmation(value: unknown, counts: RecoveryCounts): string | null {
+  if (counts.pages > 0 && isTimestamp(value)) return value
+  if (counts.pages === 0 && value === null && counts.accepted === 0 && counts.skipped === 0) return null
+  throw new StateError('state_invalid')
+}
+
+function readStoredRequest(value: unknown): RecoveryRequest {
+  try {
+    return decodeRecoveryRequest(value)
+  } catch {
+    throw new StateError('state_invalid')
+  }
+}
+
+function readActiveRecovery(value: unknown, binding: SyncBinding): RecoveryProgress | null {
+  if (value === null) return null
   if (!isObject(value)) throw new StateError('state_invalid')
-  const identity = readIdentity(value)
-  const { cursor, lastConfirmedAt } = value
+  const request = readStoredRequest(value.request)
+  const counts = readRecoveryCounts(value)
+  const { cursor } = value
+  const lastConfirmedAt = readProgressConfirmation(value.lastConfirmedAt, counts)
+  if (!sameBinding(request.binding, binding)) throw new StateError('state_invalid')
+  if ((cursor === null && lastConfirmedAt === null) || (isCursor(cursor) && lastConfirmedAt !== null)) {
+    return { request, ...counts, cursor, lastConfirmedAt }
+  }
+  throw new StateError('state_invalid')
+}
+
+function readRecoveryResult(value: unknown, binding: SyncBinding, version: SyncState['version']): RecoveryResult {
+  if (!isObject(value)) throw new StateError('state_invalid')
+  const request = readStoredRequest(value.request)
+  if (value.status === 'rejected') {
+    const reason = recoveryRejectionCodes.find(code => code === value.reason)
+    if (reason !== undefined) return { request, status: 'rejected', reason }
+  }
+  if (version === 2 && sameBinding(request.binding, binding)
+    && (value.status === 'complete' || value.status === 'failed')) {
+    const counts = readRecoveryCounts(value)
+    const lastConfirmedAt = readProgressConfirmation(value.lastConfirmedAt, counts)
+    if (value.status === 'complete' && lastConfirmedAt !== null) {
+      return { request, status: 'complete', ...counts, lastConfirmedAt }
+    }
+    if (value.status === 'failed' && isTimestamp(value.failedAt)) {
+      const reason = recoveryScanFailureCodes.find(code => code === value.reason)
+      if (reason !== undefined) {
+        return { request, status: 'failed', reason, ...counts, lastConfirmedAt, failedAt: value.failedAt }
+      }
+    }
+  }
+  throw new StateError('state_invalid')
+}
+
+function readRecoveryState(value: unknown, state: SyncState): RecoveryState | undefined {
+  if (value === undefined && state.version === 1) return undefined
+  if (!isObject(value) || !Array.isArray(value.results)) throw new StateError('state_invalid')
+  const active = readActiveRecovery(value.active, state.binding)
+  if ((active && state.version === 1) || (state.version === 2 && state.cursor === null)) {
+    throw new StateError('state_invalid')
+  }
+  const results = value.results.map((result: unknown) => readRecoveryResult(result, state.binding, state.version))
+  const ids = results.map(result => result.request.id)
+  if (active) ids.push(active.request.id)
+  if (new Set(ids).size !== ids.length || ids.length === 0
+    || (state.version === 2 && active === null && results.every(result => result.status === 'rejected'))) {
+    throw new StateError('state_invalid')
+  }
+  return { active, results }
+}
+
+function readState(value: unknown): SyncState {
+  if (!isObject(value) || !Number.isSafeInteger(value.version)) throw new StateError('state_invalid')
+  const { cursor, lastConfirmedAt, version } = value
+  if (version !== 1 && version !== 2) throw new StateError('state_version_unsupported')
   if ((cursor !== null && !isCursor(cursor)) || (lastConfirmedAt !== null && !isTimestamp(lastConfirmedAt))
     || (cursor === null) !== (lastConfirmedAt === null)) {
     throw new StateError('state_invalid')
   }
-  return { ...identity, binding: readBinding(value.binding), cursor, lastConfirmedAt }
+  const state: SyncState = {
+    version,
+    sourceInstanceId: readSourceInstanceId(value.sourceInstanceId),
+    binding: readBinding(value.binding),
+    cursor,
+    lastConfirmedAt,
+  }
+  const recovery = readRecoveryState(value.recovery, state)
+  return recovery === undefined ? state : { ...state, recovery }
 }
 
-function sameBinding(stored: SyncBinding, proposed: SyncBinding): boolean {
+export function sameBinding(stored: SyncBinding, proposed: SyncBinding): boolean {
   return stored.sourceGatewayUrl === proposed.sourceGatewayUrl
     && stored.sourceCallerKeyId === proposed.sourceCallerKeyId
     && stored.centralGatewayUrl === proposed.centralGatewayUrl
@@ -147,35 +271,55 @@ async function writeJson(
   }
 }
 
-export async function openSyncState(directory: string, proposed: SyncBinding): Promise<SyncState> {
-  const binding = readBinding(proposed)
+async function readStorage(directory: string): Promise<{ state: SyncState | undefined; hasIdentity: boolean }> {
   const savedState = await readJson(directory, 'state.json')
   const state = savedState === undefined ? undefined : readState(savedState)
   const savedIdentity = await readJson(directory, 'identity.json')
   const identity = savedIdentity === undefined ? undefined : readIdentity(savedIdentity)
+  if (identity && identity.sourceInstanceId !== state?.sourceInstanceId) throw new StateError('identity_mismatch')
+  return { state, hasIdentity: identity !== undefined }
+}
+
+export async function readStoredSyncState(directory: string): Promise<SyncState | undefined> {
+  const { state } = await readStorage(directory)
+  return state
+}
+
+export async function openSyncState(
+  directory: string, proposed: SyncBinding, { requireExisting = false } = {},
+): Promise<SyncState> {
+  const binding = readBinding(proposed)
+  const { state, hasIdentity } = await readStorage(directory)
 
   if (state) {
     if (!sameBinding(state.binding, binding)) throw new StateError('binding_mismatch')
-    if (identity && identity.sourceInstanceId !== state.sourceInstanceId) throw new StateError('identity_mismatch')
-    if (!identity) {
-      await writeJson(directory, 'identity.json', { version, sourceInstanceId: state.sourceInstanceId })
+    if (!hasIdentity) {
+      await writeJson(directory, 'identity.json', { version: identityVersion, sourceInstanceId: state.sourceInstanceId })
     }
     return state
   }
-  if (identity) throw new StateError('identity_mismatch')
+  if (requireExisting) throw new StateError('recovery_no_checkpoint')
 
   const sourceInstanceId = randomUUID()
-  const initialState: SyncState = { version, sourceInstanceId, binding, cursor: null, lastConfirmedAt: null }
+  const initialState: SyncState = { version: 1, sourceInstanceId, binding, cursor: null, lastConfirmedAt: null }
   await writeJson(directory, 'state.json', initialState)
-  await writeJson(directory, 'identity.json', { version, sourceInstanceId })
+  await writeJson(directory, 'identity.json', { version: identityVersion, sourceInstanceId })
   return initialState
 }
 
 export async function saveSyncProgress(
   directory: string, state: SyncState, nextCursor: string, operations = writeOperations,
 ): Promise<SyncState> {
-  if (!isCursor(nextCursor)) throw new StateError('state_invalid')
+  if (!isCursor(nextCursor) || state.recovery?.active) throw new StateError('state_invalid')
   const nextState = { ...state, cursor: nextCursor, lastConfirmedAt: new Date().toISOString() }
   await writeJson(directory, 'state.json', nextState, operations)
   return nextState
+}
+
+export async function saveRecoveryState(
+  directory: string, state: SyncState, operations = writeOperations,
+): Promise<SyncState> {
+  const validated = readState(state)
+  await writeJson(directory, 'state.json', validated, operations)
+  return validated
 }

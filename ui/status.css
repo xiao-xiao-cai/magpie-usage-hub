@@ -1,0 +1,27 @@
+:root {
+  color-scheme: light dark;
+  color: CanvasText;
+  background: Canvas;
+  font: 15px/1.55 system-ui, sans-serif;
+  --line: color-mix(in srgb, CanvasText 20%, Canvas);
+}
+
+body { margin: 0; }
+main { max-width: 44rem; margin: auto; padding: 1.25rem 1rem 2rem; }
+header { display: flex; align-items: end; justify-content: space-between; flex-wrap: wrap; gap: .75rem; }
+h1 { margin: .25rem 0 0; font-size: 1.45rem; }
+h2 { margin: 0 0 .6rem; font-size: 1.05rem; }
+p { margin: .65rem 0 0; }
+section { border-block-start: 1px solid var(--line); margin-top: 1rem; padding-top: .9rem; }
+dl { margin: 0; }
+dl div { display: grid; grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr); gap: .6rem; padding: .22rem 0; }
+dt, .muted { color: GrayText; }
+dd { margin: 0; overflow-wrap: anywhere; }
+.revision { font: .82rem/1.55 ui-monospace, Consolas, monospace; }
+.failure { border-inline-start: 3px solid AccentColor; padding-inline-start: .65rem; }
+button { font: inherit; color: ButtonText; padding: .3rem .85rem; background: ButtonFace; border: 1px solid var(--line); border-radius: .35rem; cursor: pointer; }
+:focus-visible { outline: 2px solid AccentColor; outline-offset: 3px; }
+
+@media (max-width: 30rem) {
+  dl div { grid-template-columns: 1fr; gap: .05rem; padding: .4rem 0; }
+}

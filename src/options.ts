@@ -16,6 +16,11 @@ export class OptionsFailure extends Error {
   }
 }
 
+export function readConfigRevision(value: unknown): string | null {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+    ? value : null
+}
+
 function readText(raw: Record<string, unknown>, field: keyof SyncOptions): string {
   const value = raw[field]
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -59,6 +64,9 @@ export function readSyncOptions(raw: unknown): SyncOptions | null {
   if (options.enabled === false || options.enabled === undefined) return null
   if (options.enabled !== true) throw new OptionsFailure('invalid_enabled')
   if (options.mode !== 'continuous') throw new OptionsFailure('invalid_mode')
+  if (options.configRevision !== undefined && readConfigRevision(options.configRevision) === null) {
+    throw new OptionsFailure('invalid_config_revision')
+  }
 
   const sourceGatewayUrl = readGatewayUrl(options, 'sourceGatewayUrl')
   if (sourceGatewayUrl.hostname !== '127.0.0.1' && sourceGatewayUrl.hostname !== '[::1]') {

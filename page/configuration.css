@@ -1,0 +1,175 @@
+.layout {
+  max-width: 62rem;
+  margin-inline: auto;
+  display: grid;
+  gap: 16px;
+}
+
+.page-header, .section-header, .actions, .request {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.page-header > div > p, .section-header > h2, .request > p {
+  margin: 0;
+}
+
+.panel, #confirmation {
+  padding: clamp(14px, 3vw, 24px);
+  border: 1px solid var(--magpie-line, ButtonBorder);
+  border-radius: 12px;
+  background: var(--magpie-card, Canvas);
+  color: var(--magpie-fg, CanvasText);
+}
+
+.section-header, .check-row, .fields {
+  margin-bottom: 14px;
+}
+
+.panel fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.check-row > input {
+  margin: 0;
+  accent-color: var(--magpie-accent, Highlight);
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+}
+
+.field {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.field > label {
+  font-weight: 600;
+}
+
+.field > input, .field > select {
+  min-width: 0;
+  min-height: 34px;
+  box-sizing: border-box;
+  background: var(--magpie-bg, Field);
+}
+
+.recovery-fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.actions {
+  justify-content: flex-start;
+}
+
+.panel button, #confirmation button, .action-link {
+  min-height: 34px;
+  padding: 5px 12px;
+  box-sizing: border-box;
+}
+
+.primary, .action-link {
+  color: var(--magpie-accent, LinkText);
+  background: var(--magpie-accent-soft, Canvas);
+  border: 1px solid var(--magpie-line, ButtonBorder);
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.action-link {
+  display: inline-flex;
+  align-items: center;
+}
+
+.revision, .feedback, .difference {
+  color: var(--magpie-muted, GrayText);
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.feedback:empty {
+  margin: 0;
+}
+
+.feedback[data-alert], .difference {
+  color: var(--magpie-fg, CanvasText);
+}
+
+.difference {
+  padding-inline-start: 20px;
+}
+
+.request {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--magpie-line, ButtonBorder);
+}
+
+#confirmation {
+  width: min(36rem, calc(100% - 2rem));
+  max-height: calc(100% - 2rem);
+  box-sizing: border-box;
+}
+
+#confirmation::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+
+#confirmation .actions {
+  margin-top: 16px;
+}
+
+.review {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 14px;
+  margin: 14px 0;
+}
+
+.review > dt {
+  font-weight: 600;
+}
+
+.review > dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.layout :focus-visible, #confirmation :focus-visible {
+  outline: 2px solid var(--magpie-accent, Highlight);
+  outline-offset: 2px;
+}
+
+.layout [hidden], #confirmation [hidden] {
+  display: none;
+}
+
+@media (max-width: 680px) {
+  .recovery-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 510px) {
+  .fields {
+    grid-template-columns: 1fr;
+  }
+}
