@@ -7,6 +7,7 @@ export async function reportPage(
   rows: readonly ReportRow[],
   nextCursor: string,
   timeoutMs: number,
+  direct = false,
 ): Promise<{ nextCursor: string; accepted: number; skipped: number }> {
   let accepted = 0
   let skipped = 0
@@ -16,7 +17,7 @@ export async function reportPage(
     for (const batch of splitUsageBatches(batchRows)) {
       const count = batch.rids.length
       try {
-        const receipt = await postUsageBatch(center, key, batch.body, batch.rids, timeoutMs)
+        const receipt = await postUsageBatch(center, key, batch.body, batch.rids, timeoutMs, direct)
         accepted += receipt.accepted
         skipped += receipt.skipped
       } catch (error) {

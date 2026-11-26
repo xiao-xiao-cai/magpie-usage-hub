@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="usage-admin-token" content="__USAGE_ADMIN_TOKEN__">
+  <title>来源管理 · Magpie Usage Hub</title>
+  <link rel="stylesheet" href="../dashboard/dashboard.css">
+  <link rel="stylesheet" href="sources.css">
+  <script defer src="sources.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <a href="../dashboard/">用量看板</a>
+        <h1>来源管理</h1>
+      </div>
+      <button id="refresh-sources" type="button">刷新</button>
+    </header>
+    <p id="sources-notice" class="notice" role="status">正在读取来源…</p>
+
+    <section id="pairing-result" aria-labelledby="pairing-title" hidden>
+      <h2 id="pairing-title">一次性配对码</h2>
+      <p id="pairing-summary"></p>
+      <p class="muted">将配对码写入节点上仅 Magpie 宿主账户可读的文本文件，在节点配置中填写文件的绝对路径。</p>
+      <div class="controls">
+        <button id="reveal-code" type="button" aria-expanded="false" aria-controls="pairing-value">显示配对码</button>
+        <button id="dismiss-code" type="button">关闭配对提示</button>
+      </div>
+      <div id="pairing-value" class="source-field" hidden>
+        <label for="pairing-code">配对码</label>
+        <input id="pairing-code" type="text" readonly autocomplete="off" spellcheck="false">
+      </div>
+    </section>
+
+    <section id="sources-section" aria-labelledby="sources-heading">
+      <h2 id="sources-heading">已登记来源</h2>
+      <p id="sources-empty" class="muted" hidden>暂无来源。</p>
+      <div id="sources-table" class="table-scroll" role="region" tabindex="0" aria-label="来源列表" hidden>
+        <table>
+          <thead>
+            <tr><th scope="col">来源</th><th scope="col">状态</th><th scope="col">最近联系</th><th scope="col">最近入账</th><th scope="col">操作</th></tr>
+          </thead>
+          <tbody id="sources-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="editor" aria-labelledby="edit-title" hidden>
+      <h2 id="edit-title">来源设置</h2>
+      <p id="edit-scope" class="muted"></p>
+      <form id="edit-source">
+        <fieldset id="edit-fields" class="source-fields" disabled>
+          <label class="source-check" for="edit-enabled">
+            <input id="edit-enabled" type="checkbox">
+            启用采集
+          </label>
+          <div class="source-field">
+            <label for="edit-interval">轮询间隔（秒）</label>
+            <input id="edit-interval" type="number" min="5" max="900" step="1" required>
+          </div>
+          <div class="source-actions controls">
+            <button id="save-source" type="submit">保存设置</button>
+            <button id="renew-code" type="button" hidden>重新生成配对码</button>
+            <button id="review-latest" type="button" hidden>采用最新修订并保留草稿</button>
+            <button id="close-editor" type="button">关闭设置</button>
+          </div>
+        </fieldset>
+      </form>
+      <p id="edit-conflict" class="muted" role="status" hidden></p>
+      <p id="edit-notice" class="notice" role="status"></p>
+    </section>
+
+    <section aria-labelledby="add-title">
+      <h2 id="add-title">添加来源</h2>
+      <p class="muted">选择节点上的专用测试 Key 与实际供应商。节点首次启用时从当前用量游标开始。</p>
+      <form id="add-source">
+        <fieldset id="add-fields" class="source-fields" disabled>
+          <div class="source-field">
+            <label for="source-name">来源名称</label>
+            <input id="source-name" type="text" maxlength="80" autocomplete="off" required>
+          </div>
+          <div class="source-field">
+            <label for="source-interval">轮询间隔（秒）</label>
+            <input id="source-interval" type="number" min="5" max="900" step="1" value="60" required>
+          </div>
+          <div class="source-field">
+            <label for="source-key">专用测试 Key ID</label>
+            <input id="source-key" type="text" maxlength="128" pattern="[a-zA-Z0-9_\-]+" autocomplete="off" spellcheck="false" required>
+          </div>
+          <div class="source-field">
+            <label for="source-provider">供应商 ID</label>
+            <input id="source-provider" type="text" maxlength="256" autocomplete="off" spellcheck="false" required>
+          </div>
+          <label class="source-check" for="source-enabled">
+            <input id="source-enabled" type="checkbox">
+            创建后启用采集
+          </label>
+          <div class="source-actions controls">
+            <button id="add-button" type="submit">添加并生成配对码</button>
+          </div>
+        </fieldset>
+      </form>
+      <p id="add-notice" class="notice" role="status"></p>
+    </section>
+  </main>
+</body>
+</html>

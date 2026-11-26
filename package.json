@@ -1,6 +1,8 @@
 {
   "name": "magpie-usage-hub",
-  "version": "0.3.0",
+  "version": "0.4.0",
+  "description": "Manage reporting sources and view gateway usage across Magpie instances.",
+  "keywords": ["magpie-page"],
   "private": true,
   "type": "module",
   "exports": {
@@ -13,6 +15,11 @@
     "ui/"
   ],
   "magpie": {
+    "name": "Magpie Usage Hub",
+    "summary": {
+      "en": "Pair Magpie nodes, manage reporting from one center, and review gateway usage by source.",
+      "zh": "在中心配对并管理 Magpie 节点，按来源查看网关用量。"
+    },
     "page": {
       "title": "Magpie Usage Hub",
       "file": "page/index.html",

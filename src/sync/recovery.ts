@@ -1,5 +1,5 @@
 import { GatewayFailure, type UsagePage } from '../gateway/client.ts'
-import type { SyncOptions } from '../options.ts'
+import type { RuntimeSyncOptions } from '../options.ts'
 import type { RecoveryRequest } from '../recovery.ts'
 import {
   sameBinding, saveRecoveryState, StateError,
@@ -8,7 +8,7 @@ import {
 import { readValidatedPage, sendUsagePage } from './read-page.ts'
 
 async function checkPriorCursor(
-  options: SyncOptions, cursor: string, timeoutMs: number,
+  options: RuntimeSyncOptions, cursor: string, timeoutMs: number,
 ): Promise<RecoveryRejectionCode | undefined> {
   try {
     await readValidatedPage(options, cursor, timeoutMs)
@@ -23,7 +23,7 @@ async function checkPriorCursor(
 }
 
 export async function prepareRecovery(
-  directory: string, state: SyncState, request: RecoveryRequest | undefined, options: SyncOptions, timeoutMs: number,
+  directory: string, state: SyncState, request: RecoveryRequest | undefined, options: RuntimeSyncOptions, timeoutMs: number,
 ): Promise<SyncState> {
   if (request === undefined) return state
   const recovery = state.recovery ?? { active: null, results: [] }
@@ -55,7 +55,7 @@ export async function prepareRecovery(
 }
 
 export async function advanceRecoveryPage(
-  directory: string, state: SyncState, options: SyncOptions, timeoutMs: number, operations?: WriteOperations,
+  directory: string, state: SyncState, options: RuntimeSyncOptions, timeoutMs: number, operations?: WriteOperations,
 ): Promise<
   | { status: 'confirmed'; state: SyncState; accepted: number; skipped: number; hasMore: boolean }
   | { status: 'failed'; state: SyncState; reason: RecoveryScanFailureCode }

@@ -1,88 +1,57 @@
-import { mkdir, realpath } from 'node:fs/promises'
+import { join } from 'node:path'
 import { type Diagnostics, updateDiagnosticProgress } from '../diagnostics.ts'
-import { GatewayFailure, readGatewayPid } from '../gateway/client.ts'
-import type { SyncOptions } from '../options.ts'
+import { acquireGatewayLock, checkGatewayOwner, logRuntime as log, reportBlocked, resolveStateDirectory, waitForRetry } from '../host.ts'
+import type { ManagedSourceOptions, RuntimeSyncOptions, SyncOptions } from '../options.ts'
 import type { RecoveryRequest } from '../recovery.ts'
-import { tryAcquireSyncLock } from '../state/lock.ts'
-import { openSyncState, saveSyncProgress, StateError, type SyncBinding } from '../state/store.ts'
+import { openSyncState, sameBinding, saveSyncProgress, StateError, type SyncBinding, type SyncState } from '../state/store.ts'
+import { openManagedSource } from './managed.ts'
 import { MappingFailure } from './mapping.ts'
-import { readValidatedPage, sendUsagePage, SyncFailure } from './read-page.ts'
+import { readValidatedPage, sendUsagePage } from './read-page.ts'
 import { advanceRecoveryPage, prepareRecovery } from './recovery.ts'
 
 const maxPages = 5
 const roundBudgetMs = 30_000
-const maxRetryDelayMs = 900_000
-const retryableCodes = new Set(['network_error', 'timeout', 'rate_limited', 'upstream_failure'])
 
-function log(event: { status: string; [field: string]: unknown }): void {
-  const output = event.status === 'blocked' || event.status === 'retrying' ? console.warn : console.info
-  output('[magpie-usage-hub]', JSON.stringify(event))
-}
+type RoundConfig = { options: RuntimeSyncOptions; enabled: boolean; sourceInstanceId?: string }
 
-async function waitForRetry(error: unknown, failures: number, diagnostics: Diagnostics): Promise<void> {
-  if (!(error instanceof GatewayFailure) || !retryableCodes.has(error.code)) throw error
-  const backoffMs = Math.min(maxRetryDelayMs, 10_000 * 2 ** Math.min(failures, 7))
-  const localDelayMs = Math.min(maxRetryDelayMs, backoffMs + Math.floor(backoffMs * 0.25 * Math.random()))
-  const delayMs = Math.max(localDelayMs, error.retryAfterMs ?? 0)
-  const retryTime = new Date(Date.now() + delayMs)
-  diagnostics.update({ phase: 'retrying',
-    failure: { stage: error.stage, code: error.code, httpStatus: error.httpStatus },
-    retryAt: Number.isFinite(retryTime.getTime()) ? retryTime.toISOString() : null,
-  })
-  log({ status: 'retrying', stage: error.stage, code: error.code, httpStatus: error.httpStatus, delayMs })
-  const maxTimerMs = 2_147_483_647
-  for (let remainingMs = delayMs; remainingMs > 0; remainingMs -= maxTimerMs) {
-    await Bun.sleep(Math.min(remainingMs, maxTimerMs))
-  }
-}
-
-async function checkGatewayOwner(source: URL, timeoutMs: number): Promise<void> {
-  const pid = await readGatewayPid(source, timeoutMs)
-  if (pid !== process.ppid) throw new SyncFailure('source', 'source_owner_mismatch')
-}
-
-async function waitForGatewayOwner(source: URL, timeoutMs: number, diagnostics: Diagnostics): Promise<void> {
-  for (let failures = 0; ; failures += 1) {
-    try {
-      diagnostics.update({ lastAttemptAt: new Date().toISOString() })
-      await checkGatewayOwner(source, timeoutMs)
-      return
-    } catch (error) {
-      await waitForRetry(error, failures, diagnostics)
-    }
-  }
-}
-
-async function resolveStateDirectory(directory: string): Promise<string> {
-  try {
-    await mkdir(directory, { recursive: true, mode: 0o700 })
-    return await realpath(directory)
-  } catch {
-    throw new SyncFailure('state', 'state_directory_unavailable')
+function bindingFor(options: RuntimeSyncOptions): SyncBinding {
+  return {
+    sourceGatewayUrl: options.sourceGatewayUrl.href,
+    sourceCallerKeyId: options.sourceCallerKeyId,
+    ...(options.sourceProviderId === undefined ? {} : { sourceProviderId: options.sourceProviderId }),
+    centralGatewayUrl: options.centralGatewayUrl.href,
+    initialMode: options.initialMode,
   }
 }
 
 async function poll(
-  directory: string, options: SyncOptions, timeoutMs: number, diagnostics: Diagnostics, request?: RecoveryRequest,
+  directory: string, sourceGateway: URL, timeoutMs: number, diagnostics: Diagnostics,
+  readConfig: () => Promise<RoundConfig>, request?: RecoveryRequest,
 ): Promise<void> {
-  const binding: SyncBinding = {
-    sourceGatewayUrl: options.sourceGatewayUrl.href,
-    sourceCallerKeyId: options.sourceCallerKeyId,
-    centralGatewayUrl: options.centralGatewayUrl.href,
-    initialMode: options.initialMode,
-  }
-  let state = await openSyncState(directory, binding, { requireExisting: request !== undefined })
-  if (state.cursor !== null) log({ status: 'resumed' })
-  diagnostics.update({ appliedRevision: diagnostics.getStatus().loadedRevision })
   const requestId = request?.id
-  updateDiagnosticProgress(diagnostics, state, requestId)
-
+  let state: SyncState | undefined
   let failures = 0
   while (true) {
     const roundStarted = performance.now()
     try {
       diagnostics.update({ lastAttemptAt: new Date().toISOString() })
-      await checkGatewayOwner(options.sourceGatewayUrl, timeoutMs)
+      await checkGatewayOwner(sourceGateway, timeoutMs, 'source')
+      const { options, enabled, sourceInstanceId } = await readConfig()
+      const binding = bindingFor(options)
+      if (state === undefined) {
+        state = await openSyncState(directory, binding, { requireExisting: request !== undefined, sourceInstanceId })
+        if (state.cursor !== null) log({ status: 'resumed' })
+        diagnostics.update({ appliedRevision: diagnostics.getStatus().loadedRevision })
+        updateDiagnosticProgress(diagnostics, state, requestId)
+      } else if (!sameBinding(state.binding, binding)) {
+        throw new StateError('binding_mismatch')
+      }
+      if (!enabled) {
+        diagnostics.update({ phase: 'paused', failure: null, retryAt: null })
+        failures = 0
+        await Bun.sleep(options.pollIntervalSec * 1_000)
+        continue
+      }
       if (request !== undefined) {
         diagnostics.update({ phase: 'recovering', lastAttemptAt: new Date().toISOString(), failure: null, retryAt: null })
         state = await prepareRecovery(directory, state, request, options, timeoutMs)
@@ -130,41 +99,26 @@ async function poll(
   }
 }
 
-function reportBlocked(error: unknown, diagnostics: Diagnostics): void {
-  const failure = classifyFailure(error)
-  diagnostics.update({ phase: 'blocked', failure, retryAt: null })
-  log({ status: 'blocked', ...failure })
-}
-
-function classifyFailure(error: unknown) {
-  if (error instanceof GatewayFailure) return { stage: error.stage, code: error.code, httpStatus: error.httpStatus }
-  if (error instanceof SyncFailure) return { stage: error.stage, code: error.code }
-  if (error instanceof StateError) return { stage: 'state' as const, code: error.code }
-  if (error instanceof MappingFailure) return { stage: 'mapping' as const, code: error.code }
-  return { stage: 'run' as const, code: 'unexpected_failure' }
-}
-
 export async function runContinuousSync(
-  stateDirectory: string, options: SyncOptions, diagnostics: Diagnostics, request?: RecoveryRequest,
+  stateDirectory: string, options: SyncOptions | ManagedSourceOptions, diagnostics: Diagnostics, request?: RecoveryRequest,
 ): Promise<void> {
   const timeoutMs = options.requestTimeoutSec * 1_000
   try {
-    await waitForGatewayOwner(options.sourceGatewayUrl, timeoutMs, diagnostics)
-    const directory = await resolveStateDirectory(stateDirectory)
-    let lock = tryAcquireSyncLock(directory)
-    if (lock === undefined) log({ status: 'waiting_for_lock' })
-    while (lock === undefined) {
-      diagnostics.update({ phase: 'waiting_lock', failure: null, retryAt: null })
-      await Bun.sleep(1_000)
-      await waitForGatewayOwner(options.sourceGatewayUrl, timeoutMs, diagnostics)
-      lock = tryAcquireSyncLock(directory)
-    }
+    const { directory, lock } = await acquireGatewayLock(stateDirectory, options.sourceGatewayUrl, timeoutMs, diagnostics, 'source')
     try {
-      await poll(directory, options, timeoutMs, diagnostics, request)
+      if ('mode' in options) {
+        const progress = await resolveStateDirectory(join(directory, 'managed'))
+        const readConfig = await openManagedSource(progress, options, diagnostics)
+        await poll(progress, options.sourceGatewayUrl, timeoutMs, diagnostics, readConfig)
+      } else {
+        const progress = options.sourceProviderId === undefined ? directory : await resolveStateDirectory(join(directory, 'trial'))
+        await poll(progress, options.sourceGatewayUrl, timeoutMs, diagnostics, async () => ({ options, enabled: true }), request)
+      }
     } finally {
       lock.release()
     }
   } catch (error) {
-    reportBlocked(error, diagnostics)
+    reportBlocked(error, diagnostics, error instanceof MappingFailure
+      ? { stage: 'mapping', code: error.code } : { stage: 'run', code: 'unexpected_failure' })
   }
 }

@@ -54,6 +54,10 @@
   gap: 14px 20px;
 }
 
+.panel fieldset.fields {
+  margin-block-end: 14px;
+}
+
 .field {
   display: grid;
   align-content: start;

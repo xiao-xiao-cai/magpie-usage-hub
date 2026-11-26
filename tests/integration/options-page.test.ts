@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
+import { readSyncOptions } from '../../src/options.ts'
 
 type Options = Record<string, unknown>
 type ViewState = {
@@ -15,6 +17,7 @@ type ViewState = {
 type PageOptions = {
   revision(value: unknown): string
   createId(): string
+  pageServiceLink(service: unknown, current: string, saved?: Options): string
   settingsView(saved: Options): Options
   settingsPatch(draft: Options, saved: Options): Options
   recoveryBinding(saved: Options): Options | null
@@ -77,14 +80,14 @@ function harness() {
 
 describe('Options configuration page', () => {
   test('starts disabled and shows credential state without the saved path', () => {
-    expect(page.settingsView({})).toMatchObject({ enabled: false, initialMode: 'now', pollIntervalSec: '60', requestTimeoutSec: '30' })
+    expect(page.settingsView({})).toMatchObject({ enabled: false, mode: 'managed', initialMode: 'now', pollIntervalSec: '60', requestTimeoutSec: '30' })
     const saved = page.settingsView({ ...original, centralGatewayUrl: 'https://user:secret@usage.example.com/' })
     expect(saved.centralKeyFile).toBe('')
     expect(saved.centralGatewayUrl).toBe('')
     expect(JSON.stringify(saved)).not.toContain('synthetic\\key')
     expect(JSON.stringify(saved)).not.toContain('secret')
 
-    const draft = { ...page.settingsView(original), pollIntervalSec: 60, requestTimeoutSec: 30 }
+    const draft = { ...page.settingsView(original), sourceProviderId: 'synthetic-provider', pollIntervalSec: 60, requestTimeoutSec: 30 }
     expect(page.settingsPatch(draft, original)).not.toHaveProperty('centralKeyFile')
     expect(page.settingsPatch({ ...draft, centralKeyFile: 'D:\\keys\\usage.txt' }, original)).toMatchObject({
       centralKeyFile: 'D:\\keys\\usage.txt',
@@ -92,6 +95,103 @@ describe('Options configuration page', () => {
     })
     expect(() => page.settingsPatch({ ...draft, pollIntervalSec: Number.NaN }, original)).toThrow(/5–900/)
     expect(() => page.settingsPatch({ ...draft, centralKeyFile: 'relative.txt' }, original)).toThrow(/绝对文件路径/)
+  })
+
+  test('saves managed enrollment without exposing the file path or changing the saved manual scope', async () => {
+    const ui = harness()
+    const recoveryRequest = { id: page.createId(), kind: 'cursor', from: '2025-11-01T00:00:00.000Z',
+      binding: page.recoveryBinding(original),
+    }
+    ui.update({ recoveryRequest })
+    await ui.refresh()
+    const draft = { ...page.settingsView(original), mode: 'managed', pairingCodeFile: 'C:\\synthetic\\pair.txt', requestTimeoutSec: 30 }
+    const patch = page.settingsPatch(draft, original)
+    expect(patch).toEqual({
+      role: 'source', enabled: true, mode: 'managed', sourceGatewayUrl: 'http://127.0.0.1:3425/',
+      centralGatewayUrl: 'https://usage.example.com/', pairingCodeFile: draft.pairingCodeFile, requestTimeoutSec: 30,
+    })
+    expect(() => page.settingsPatch({ ...draft, pairingCodeFile: 'pair.txt' }, original)).toThrow(/绝对文件路径/)
+    expect(page.settingsPatch({ ...draft, pairingCodeFile: '' }, original)).not.toHaveProperty('pairingCodeFile')
+    await ui.submit('settings', patch)
+    expect(ui.last).toMatchObject({ result: 'confirmed', saved: { ...original, ...patch, recoveryRequest, configRevision: expect.any(String) } })
+    expect(page.settingsView(ui.last.saved!)).toMatchObject({ mode: 'managed', pairingCodeFile: '' })
+    expect(page.recoveryBinding(ui.last.saved!)).toBeNull()
+  })
+
+  test('enables a managed-only center without a manual ingest credential file', () => {
+    const view = page.settingsView({ role: 'center' })
+    const patch = page.settingsPatch({ ...view, enabled: true, centerGatewayUrl: 'http://127.0.0.1:3425/',
+      ingestPort: 3494, requestTimeoutSec: 30,
+    }, {})
+    expect(patch).toMatchObject({ role: 'center', enabled: true, ingestHost: '127.0.0.1', ingestPort: 3494 })
+    expect(patch).not.toHaveProperty('ingestKeyFile')
+  })
+
+  test('requires a provider for a new or explicit manual source', () => {
+    const draft = { ...page.settingsView(original), pollIntervalSec: 60, requestTimeoutSec: 30 }
+    expect(() => page.settingsPatch(draft, {})).toThrow(/供应商 ID/)
+    expect(() => page.settingsPatch(draft, { ...original, role: 'source' })).toThrow(/供应商 ID/)
+    expect(() => page.settingsPatch({ ...draft, sourceProviderId: 'invalid id' }, original)).toThrow(/供应商 ID/)
+    const patch = page.settingsPatch({ ...draft, sourceProviderId: 'fixture.provider' }, original)
+    expect(patch).toMatchObject({ role: 'source', enabled: true, sourceProviderId: 'fixture.provider' })
+    expect(page.recoveryBinding({ ...original, ...patch })).toHaveProperty('sourceProviderId', 'fixture.provider')
+    const keyPath = fileURLToPath(new URL('../../synthetic-key.txt', import.meta.url))
+    expect(readSyncOptions({ ...original, ...patch, centralKeyFile: keyPath }))
+      .toHaveProperty('sourceProviderId', 'fixture.provider')
+  })
+
+  test('preserves the legacy source binding across saves, disable and re-enable', async () => {
+    const ui = harness()
+    const centralKeyFile = fileURLToPath(new URL('../../synthetic-key.txt', import.meta.url))
+    const binding = page.recoveryBinding(original)
+    const recoveryRequest = { id: page.createId(), kind: 'cursor', from: '2025-11-01T00:00:00.000Z', binding }
+    ui.update({ centralKeyFile, recoveryRequest })
+    await ui.refresh()
+
+    for (const enabled of [true, false, true]) {
+      const saved = ui.last.saved!
+      const draft = { ...page.settingsView(saved), enabled, pollIntervalSec: 120, requestTimeoutSec: 30 }
+      await ui.submit('settings', page.settingsPatch(draft, saved))
+      expect(ui.last).toMatchObject({ result: 'confirmed', saved: { enabled, pollIntervalSec: 120, recoveryRequest } })
+      expect(ui.last.saved).not.toHaveProperty('role')
+      expect(ui.last.saved).not.toHaveProperty('sourceProviderId')
+      expect(page.recoveryBinding(ui.last.saved!)).toEqual(enabled ? binding : null)
+      const syncOptions = readSyncOptions(ui.last.saved)
+      if (enabled) expect(syncOptions).toMatchObject({ centralKeyFile, pollIntervalSec: 120 })
+      else expect(syncOptions).toBeNull()
+    }
+  })
+
+  test('keeps inactive source settings and masks the center credential across save readback', async () => {
+    const ui = harness()
+    const center = { ...original, role: 'center', centerGatewayUrl: 'http://127.0.0.1/', ingestKeyFile: '/config/synthetic-keys.json' }
+    const view = page.settingsView(center)
+    expect(view).toMatchObject({ role: 'center', enabled: true, ingestKeyFile: '', ingestHost: '127.0.0.1', ingestPort: '3494' })
+    expect(view.centralKeyFile).toBe('')
+    expect(page.recoveryBinding(center)).toBeNull()
+    const draft = { ...view, ingestPort: 3494, requestTimeoutSec: 30 }
+    expect(() => page.settingsPatch({ ...draft, centerGatewayUrl: 'https://elsewhere.example/' }, center)).toThrow(/本机中心网关/)
+    expect(() => page.settingsPatch({ ...draft, ingestPort: 80 }, center)).toThrow(/网关的端口不同/)
+    expect(() => page.settingsPatch({ ...draft, ingestPort: 3493 }, center)).toThrow(/插件页面服务/)
+    expect(() => page.settingsPatch({ ...draft, ingestHost: '192.0.2.10' }, center)).toThrow(/监听地址/)
+    expect(() => page.settingsPatch({ ...draft, ingestKeyFile: 'relative.txt' }, center)).toThrow(/绝对文件路径/)
+    await ui.refresh()
+    const patch = page.settingsPatch({ ...draft, ingestHost: '0.0.0.0', ingestKeyFile: center.ingestKeyFile }, ui.last.saved!)
+    await ui.submit('settings', patch)
+    expect(ui.last).toMatchObject({ result: 'confirmed', saved: { ...original, ...patch, configRevision: expect.any(String) } })
+    expect(page.settingsPatch(draft, ui.last.saved!)).not.toHaveProperty('ingestKeyFile')
+    expect(page.recoveryBinding(ui.last.saved!)).toBeNull()
+  })
+
+  test('links the saved role to the corresponding page service under the current Web token', () => {
+    const base = 'https://usage.example.com/plugins/synthetic-token/'
+    const service = `${base}_magpie/service/`
+    const pageUrl = `${base}index.html`
+    expect(page.pageServiceLink(service, pageUrl, original)).toBe(`${service}#revision=${revisionOne}`)
+    expect(page.pageServiceLink(service, pageUrl, { role: 'center', enabled: true })).toBe(`${service}dashboard/`)
+    expect(page.pageServiceLink(service, pageUrl, { role: 'center', enabled: false })).toBe('')
+    expect(page.pageServiceLink('', pageUrl, original)).toBe('')
+    expect(page.pageServiceLink(service, 'https://elsewhere.example/', original)).toBe('')
   })
 
   test('merges foreign fields read immediately before submission and verifies the whole readback', async () => {
@@ -119,6 +219,46 @@ describe('Options configuration page', () => {
     await ui.submit('settings', { requestTimeoutSec: 20 })
     expect(ui.last.result).toBe('confirmed')
     expect(ui.writes[0]).toMatchObject({ pollIntervalSec: 50, requestTimeoutSec: 20 })
+  })
+
+  test('retains a disabled role switch after another window enables the saved role', async () => {
+    class Control extends EventTarget {
+      checked = false
+      disabled = false
+      value = ''
+      get valueAsNumber() { return Number(this.value) }
+      setAttribute() {}
+      removeAttribute() {}
+      replaceChildren() {}
+      toggleAttribute() {}
+    }
+    const controls = new Map<string, Control>()
+    function control(id: string) {
+      if (!controls.has(id)) controls.set(id, new Control())
+      return controls.get(id)!
+    }
+    let stored: Options = { ...original, enabled: false, centerGatewayUrl: 'http://127.0.0.1:3425/' }
+    runInNewContext(await Bun.file(new URL('../../page/configuration.js', import.meta.url)).text(), {
+      usageHubOptions: page,
+      document: { getElementById: control, createElement: () => new Control() },
+      window: {
+        location: { href: 'https://usage.example.com/plugins/fixture/' },
+        magpie: { options: { async get() { return { ...stored } }, async set(next: Options) { stored = next } } },
+      },
+      Event, setTimeout, clearTimeout,
+    })
+    await Bun.sleep(0)
+    control('role').value = 'center'
+    control('role').dispatchEvent(new Event('change'))
+    stored = { ...stored, enabled: true, configRevision: page.createId() }
+    control('reload-options').dispatchEvent(new Event('click'))
+    await Bun.sleep(0)
+    control('rebase-options').dispatchEvent(new Event('click'))
+    expect(control('role').value).toBe('center')
+    expect(control('enabled').checked).toBe(false)
+    control('save-settings').dispatchEvent(new Event('click', { cancelable: true }))
+    await Bun.sleep(0)
+    expect(stored).toMatchObject({ role: 'center', enabled: false })
   })
 
   test('retains the prior saved view when the bridge rejects a write', async () => {
@@ -222,6 +362,20 @@ describe('Options configuration page', () => {
     expect(ui.last.saved).toMatchObject({ recoveryRequest, enabled: false })
     await ui.submit('withdraw', {})
     expect(ui.last).toMatchObject({ result: 'confirmed', action: 'withdraw', saved: { enabled: false } })
+    expect(ui.last.saved).not.toHaveProperty('recoveryRequest')
+  })
+
+  test('retains a request at the same scope but clears it when saving a different provider', async () => {
+    const ui = harness()
+    const source = { ...original, role: 'source', sourceProviderId: 'fixture-provider' }
+    const recoveryRequest = { id: page.createId(), kind: 'cursor', from: '2025-11-01T00:00:00.000Z',
+      binding: page.recoveryBinding(source),
+    }
+    ui.update({ ...source, recoveryRequest })
+    await ui.refresh()
+    await ui.submit('settings', { role: 'center', enabled: false })
+    expect(ui.last.saved).toMatchObject({ sourceProviderId: 'fixture-provider', recoveryRequest })
+    await ui.submit('settings', { role: 'source', enabled: true, sourceProviderId: 'other-provider' })
     expect(ui.last.saved).not.toHaveProperty('recoveryRequest')
   })
 })

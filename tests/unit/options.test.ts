@@ -37,3 +37,14 @@ test('options outside the dedicated scope and time bounds are rejected', () => {
     expect(() => readSyncOptions({ ...options, requestTimeoutSec })).toThrow('invalid_requestTimeoutSec')
   }
 })
+
+test('requires an exact provider ID for an enabled explicit source role', () => {
+  expect(readSyncOptions(options)).not.toHaveProperty('sourceProviderId')
+  expect(readSyncOptions({ ...options, role: 'source', enabled: false })).toBeNull()
+  expect(() => readSyncOptions({ ...options, role: 'center' })).toThrow('invalid_role')
+  expect(readSyncOptions({ ...options, role: 'source', sourceProviderId: 'fixture.provider' }))
+    .toHaveProperty('sourceProviderId', 'fixture.provider')
+  for (const sourceProviderId of [undefined, null, '', ' ', 'fixture provider', 'fixture\u0000provider', '保'.repeat(257)]) {
+    expect(() => readSyncOptions({ ...options, role: 'source', sourceProviderId })).toThrow('invalid_sourceProviderId')
+  }
+})

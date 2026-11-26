@@ -1,4 +1,9 @@
+import { requestDirect } from './direct.ts'
+import { isProviderId, readConfigRevision } from '../options.ts'
+
 const usageRequestsPath = '/v1/magpie/usage/requests'
+const managedPairPath = '/v1/magpie/usage/pair'
+const managedConfigPath = '/v1/magpie/usage/config'
 
 type GatewayStage = 'source' | 'center'
 
@@ -21,6 +26,8 @@ type GatewayFailureCode =
   | 'invalid_source_page'
   | 'invalid_batch'
   | 'invalid_receipt'
+  | 'source_paused'
+  | 'managed_config_invalid'
 
 export class GatewayFailure extends Error {
   readonly stage: GatewayStage
@@ -70,21 +77,26 @@ function readRetryAfter(value: string | null): number | undefined {
 
 async function requestJson(
   url: URL,
-  init: RequestInit,
+  init: Parameters<typeof requestDirect>[1],
   timeoutMs: number,
   stage: GatewayStage,
+  direct = false,
 ): Promise<unknown> {
   const signal = AbortSignal.timeout(timeoutMs)
   let response: Response
   try {
-    response = await fetch(url, { ...init, signal, redirect: 'manual', tls: { rejectUnauthorized: true } })
+    response = direct || url.hostname === '127.0.0.1' || url.hostname === '[::1]'
+      ? await requestDirect(url, init, signal)
+      : await fetch(url, { ...init, signal, redirect: 'manual', tls: { rejectUnauthorized: true } })
   } catch {
     throw new GatewayFailure(stage, signal.aborted ? 'timeout' : 'network_error')
   }
 
   const { status } = response
+  if (status === 204 && url.pathname === managedPairPath) return undefined
   const cursorFailure = stage === 'source' && url.pathname === usageRequestsPath && (status === 400 || status === 410)
-  if (response.ok || cursorFailure) {
+  const reportRejected = stage === 'center' && direct && url.pathname === usageRequestsPath && status === 403
+  if (response.ok || cursorFailure || reportRejected) {
     let payload: unknown
     try {
       payload = await response.json()
@@ -92,13 +104,16 @@ async function requestJson(
       if (signal.aborted) throw new GatewayFailure(stage, 'timeout')
       if (!(error instanceof SyntaxError)) throw new GatewayFailure(stage, 'network_error')
       if (response.ok) throw new GatewayFailure(stage, 'invalid_response_json')
-      throw new GatewayFailure(stage, 'http_error', status)
+      if (cursorFailure) throw new GatewayFailure(stage, 'http_error', status)
     }
     if (response.ok) return payload
-    throw new GatewayFailure(stage, readCursorFailure(payload, status), status)
+    if (cursorFailure) throw new GatewayFailure(stage, readCursorFailure(payload, status), status)
+    if (isRecord(payload) && isRecord(payload.error) && payload.error.code === 'source_paused') {
+      throw new GatewayFailure(stage, 'source_paused', status)
+    }
+  } else {
+    void response.body?.cancel().catch(() => undefined)
   }
-
-  void response.body?.cancel().catch(() => undefined)
   let code: GatewayFailureCode = 'http_error'
   if (status >= 300 && status < 400) code = 'redirect_refused'
   else if (status === 401 || status === 403) code = 'unauthorized'
@@ -112,11 +127,38 @@ async function requestJson(
   throw new GatewayFailure(stage, code, status, retryAfterMs)
 }
 
-export async function readGatewayPid(baseUrl: URL, timeoutMs: number): Promise<number> {
-  const payload = await requestJson(new URL('/', baseUrl), { method: 'GET' }, timeoutMs, 'source')
+export async function pairManagedSource(
+  baseUrl: URL, code: string, credentialDigest: string, timeoutMs: number,
+): Promise<void> {
+  const payload = await requestJson(new URL(managedPairPath, baseUrl), {
+    method: 'POST', headers: { Authorization: `Bearer ${code}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ credentialDigest }),
+  }, timeoutMs, 'center', true)
+  if (payload !== undefined) throw new GatewayFailure('center', 'managed_config_invalid')
+}
+
+export async function readManagedConfig(baseUrl: URL, key: string, timeoutMs: number) {
+  const payload = await requestJson(new URL(managedConfigPath, baseUrl), {
+    method: 'GET', headers: { Authorization: `Bearer ${key}` },
+  }, timeoutMs, 'center', true)
+  if (!isRecord(payload)) throw new GatewayFailure('center', 'managed_config_invalid')
+  const { enabled, sourceCallerKeyId, sourceProviderId, pollIntervalSec } = payload
+  const sourceInstanceId = readConfigRevision(payload.sourceInstanceId)
+  if (!sourceInstanceId || typeof enabled !== 'boolean'
+    || typeof sourceCallerKeyId !== 'string' || sourceCallerKeyId === 'none' || sourceCallerKeyId !== sourceCallerKeyId.trim()
+    || !/^[a-zA-Z0-9_-]{1,128}$/.test(sourceCallerKeyId)
+    || !isProviderId(sourceProviderId) || typeof pollIntervalSec !== 'number'
+    || !Number.isInteger(pollIntervalSec) || pollIntervalSec < 5 || pollIntervalSec > 900) {
+    throw new GatewayFailure('center', 'managed_config_invalid')
+  }
+  return { sourceInstanceId, enabled, sourceCallerKeyId, sourceProviderId, pollIntervalSec }
+}
+
+export async function readGatewayPid(baseUrl: URL, timeoutMs: number, stage: GatewayStage = 'source'): Promise<number> {
+  const payload = await requestJson(new URL('/', baseUrl), { method: 'GET' }, timeoutMs, stage)
   if (!isRecord(payload) || payload.name !== 'magpie' || typeof payload.pid !== 'number'
     || !Number.isSafeInteger(payload.pid) || payload.pid <= 0) {
-    throw new GatewayFailure('source', 'invalid_gateway_identity')
+    throw new GatewayFailure(stage, 'invalid_gateway_identity')
   }
   return payload.pid
 }
@@ -126,9 +168,12 @@ export async function readUsagePage(
   cursor: string,
   callerKeyId: string,
   timeoutMs: number,
+  providerId?: string,
 ): Promise<UsagePage> {
   const url = new URL(usageRequestsPath, baseUrl)
-  url.search = new URLSearchParams({ cursor, via: 'through', limit: '500', callerKey: callerKeyId }).toString()
+  const query = new URLSearchParams({ cursor, via: 'through', limit: '500', callerKey: callerKeyId })
+  if (providerId !== undefined) query.set('provider', providerId)
+  url.search = query.toString()
   const payload = await requestJson(url, { method: 'GET' }, timeoutMs, 'source')
   if (!isRecord(payload)) throw new GatewayFailure('source', 'invalid_source_page')
 
@@ -153,6 +198,7 @@ export async function postUsageBatch(
   body: string,
   expectedRids: readonly string[],
   timeoutMs: number,
+  direct = false,
 ): Promise<{ accepted: number; skipped: number }> {
   if (expectedRids.length === 0 || new Set(expectedRids).size !== expectedRids.length) {
     throw new GatewayFailure('center', 'invalid_batch')
@@ -162,7 +208,7 @@ export async function postUsageBatch(
     method: 'POST',
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body,
-  }, timeoutMs, 'center')
+  }, timeoutMs, 'center', direct)
   if (!isRecord(payload) || !Array.isArray(payload.records) || payload.records.length !== expectedRids.length) {
     throw new GatewayFailure('center', 'invalid_receipt')
   }

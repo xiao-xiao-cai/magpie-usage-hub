@@ -70,7 +70,8 @@ function readTimestamp(value: unknown): string {
 }
 
 export function mapUsageRow(
-  row: Record<string, unknown>, sourceId: string, callerKeyId: string, includesTime?: (timestamp: string) => boolean,
+  row: Record<string, unknown>, sourceId: string, callerKeyId: string, providerId?: string,
+  includesTime?: (timestamp: string) => boolean,
 ): ReportRow | null {
   if (typeof row.origin !== 'string') throw new MappingFailure('invalid_origin')
   if (row.origin !== 'gateway') return null
@@ -79,6 +80,7 @@ export function mapUsageRow(
   }
   if (row.computer) return null
   if (row.callerKeyId !== callerKeyId) throw new MappingFailure('unexpected_caller_key')
+  if (providerId !== undefined && row.provider !== providerId) throw new MappingFailure('unexpected_provider')
   const timestamp = readTimestamp(row.t)
   if (includesTime && !includesTime(timestamp)) return null
   if (typeof row.id !== 'string' || row.id.trim() === '') throw new MappingFailure('invalid_row_id')

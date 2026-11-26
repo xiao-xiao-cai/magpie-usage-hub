@@ -75,6 +75,21 @@ describe('source gateway', () => {
     }
   })
 
+  test('combines the provider ID and caller filter on the native cursor feed', async () => {
+    const server = listen(request => {
+      expect(Object.fromEntries(new URL(request.url).searchParams)).toEqual({
+        cursor: 'bounded-cursor', via: 'through', limit: '500', callerKey: 'test-key', provider: 'fixture.provider',
+      })
+      return Response.json({ rows: [], deleted: [], next_cursor: 'bounded-next', has_more: false })
+    })
+    try {
+      expect(await readUsagePage(server.url, 'bounded-cursor', 'test-key', timeoutMs, 'fixture.provider'))
+        .toMatchObject({ nextCursor: 'bounded-next' })
+    } finally {
+      await server.stop(true)
+    }
+  })
+
   test('rejects malformed page data before exposing a cursor', async () => {
     const server = listen(() => Response.json({
       rows: [], deleted: [{ id: 'synthetic-deleted-row', seq: '2' }], next_cursor: 'next', has_more: false,
@@ -210,6 +225,23 @@ describe('center gateway', () => {
     try {
       await expect(postUsageBatch(server.url, 'synthetic-report-key', batchBody, expectedRids, timeoutMs))
         .rejects.toMatchObject({ stage: 'center', code, message: code, httpStatus: status })
+    } finally {
+      await server.stop(true)
+    }
+  })
+
+  test('retries when a Hub 403 response body stalls', async () => {
+    let bodyStarted = false
+    const server = listen(() => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        bodyStarted = true
+        controller.enqueue(new TextEncoder().encode('{"error":'))
+      },
+    }), { status: 403 }))
+    try {
+      await expect(postUsageBatch(server.url, 'synthetic-report-key', batchBody, expectedRids, 250, true))
+        .rejects.toMatchObject({ stage: 'center', code: 'timeout' })
+      expect(bodyStarted).toBe(true)
     } finally {
       await server.stop(true)
     }

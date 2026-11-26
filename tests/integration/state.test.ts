@@ -79,6 +79,7 @@ test('preserves progress when any binding changes', async () => {
   const alternateBindings: SyncBinding[] = [
     { ...binding, sourceGatewayUrl: 'http://127.0.0.1:3426/' },
     { ...binding, sourceCallerKeyId: 'other-test-key' },
+    { ...binding, sourceProviderId: 'fixture-provider' },
     { ...binding, centralGatewayUrl: 'https://other.example/' },
     { ...binding, initialMode: 'start' },
   ]
@@ -86,6 +87,19 @@ test('preserves progress when any binding changes', async () => {
     await expect(openSyncState(directory, alternate)).rejects.toMatchObject({ code: 'binding_mismatch' })
   }
   expect(await openSyncState(directory, binding)).toEqual(confirmed)
+})
+
+test('persists provider-bound progress and blocks changes without touching the checkpoint', async () => {
+  const scoped = { ...binding, sourceProviderId: 'fixture-provider' }
+  const state = await openSyncState(directory, scoped)
+  const confirmed = await saveSyncProgress(directory, state, 'scoped-cursor')
+  const statePath = join(directory, 'state.json')
+  const stored = await readFile(statePath, 'utf8')
+  expect(await openSyncState(directory, scoped)).toEqual(confirmed)
+  for (const alternate of [binding, { ...scoped, sourceProviderId: 'other-provider' }]) {
+    await expect(openSyncState(directory, alternate)).rejects.toMatchObject({ code: 'binding_mismatch' })
+    expect(await readFile(statePath, 'utf8')).toBe(stored)
+  }
 })
 
 test('preserves damaged data and unknown versions for recovery', async () => {

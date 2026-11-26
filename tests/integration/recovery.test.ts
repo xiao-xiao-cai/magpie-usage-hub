@@ -7,6 +7,7 @@ import type { SyncOptions } from '../../src/options.ts'
 import { readRecoveryRequest, type RecoveryRequest } from '../../src/recovery.ts'
 import { openSyncState, readStoredSyncState, saveSyncProgress, type SyncBinding } from '../../src/state/store.ts'
 import type { ReportRow } from '../../src/sync/mapping.ts'
+import { readValidatedPage, sendUsagePage } from '../../src/sync/read-page.ts'
 import { advanceRecoveryPage, prepareRecovery } from '../../src/sync/recovery.ts'
 
 const directoryPrefix = 'mpu-recovery-test-'
@@ -61,24 +62,29 @@ function ridFor(sourceInstanceId: string, rowId: string): string {
   return `mpu1.${sourceInstanceId}.${createHash('sha256').update(rowId).digest('hex')}`
 }
 
-async function fixture(read: (cursor: string) => Response, options: { loseReceiptForBatch?: number } = {}) {
+async function fixture(
+  read: (cursor: string, query: URLSearchParams) => Response,
+  options: { loseReceiptForBatch?: number; sourceProviderId?: string } = {},
+) {
   const cursors: string[] = []
   const sentBatches: ReportRow[][] = []
   const ledger = new Set<string>()
+  const reportKey = options.sourceProviderId ? 'a'.repeat(64) : 'synthetic-reporting-key'
   const source = listen(request => {
     const url = new URL(request.url)
     expect(request.method).toBe('GET')
     expect(url.pathname).toBe('/v1/magpie/usage/requests')
     expect(url.searchParams.get('via')).toBe('through')
     expect(url.searchParams.get('callerKey')).toBe(callerKey)
+    expect(url.searchParams.get('provider')).toBe(options.sourceProviderId ?? null)
     const cursor = url.searchParams.get('cursor') ?? ''
     cursors.push(cursor)
-    return read(cursor)
+    return read(cursor, url.searchParams)
   })
   const center = listen(async request => {
     expect(request.method).toBe('POST')
     expect(new URL(request.url).pathname).toBe('/v1/magpie/usage/requests')
-    expect(request.headers.get('authorization')).toBe('Bearer synthetic-reporting-key')
+    expect(request.headers.get('authorization')).toBe(`Bearer ${reportKey}`)
     const batch: ReportRow[] = await request.json()
     sentBatches.push(batch)
     const records = batch.map(({ rid }, index) => {
@@ -91,19 +97,59 @@ async function fixture(read: (cursor: string) => Response, options: { loseReceip
     return Response.json({ records, accepted, skipped: records.length - accepted })
   })
   const centralKeyFile = join(directory, 'synthetic-key.txt')
-  await writeFile(centralKeyFile, 'synthetic-reporting-key', 'utf8')
+  await writeFile(centralKeyFile, reportKey, 'utf8')
   const binding: SyncBinding = {
     sourceGatewayUrl: source.url.href,
     centralGatewayUrl: center.url.href,
     sourceCallerKeyId: callerKey,
+    ...(options.sourceProviderId === undefined ? {} : { sourceProviderId: options.sourceProviderId }),
     initialMode: 'now',
   }
   const syncOptions: SyncOptions = {
     ...binding, sourceGatewayUrl: source.url, centralGatewayUrl: center.url,
     centralKeyFile, pollIntervalSec: 60, requestTimeoutSec: 30,
   }
-  return { binding, syncOptions, cursors, ledger, sentBatches }
+  return { binding, syncOptions, cursors, ledger, sentBatches, reportKey }
 }
+
+test('uses the same dedicated Key, provider and rid for normal sync and recovery', async () => {
+  const sourceProviderId = 'fixture-provider'
+  const candidates = [
+    row('matching'), { ...row('other-provider'), provider: 'fixture-other' },
+    { ...row('other-caller'), callerKeyId: 'fixture-other-key' },
+  ]
+  let leak = false
+  const { binding, syncOptions, ledger, sentBatches, cursors, reportKey } = await fixture((_, query) => {
+    const scoped = candidates.filter(row => row.provider === query.get('provider') && row.callerKeyId === query.get('callerKey'))
+    return feed('scoped-head', leak ? candidates : scoped)
+  }, { sourceProviderId })
+  const state = await openSyncState(directory, binding)
+  const page = await readValidatedPage(syncOptions, dailyCursor, timeoutMs)
+  await writeFile(syncOptions.centralKeyFile, 'legacy-native-key', 'utf8')
+  await expect(sendUsagePage(syncOptions, page, state.sourceInstanceId, timeoutMs)).rejects.toMatchObject({
+    stage: 'center', code: 'invalid_key_file',
+  })
+  expect(sentBatches).toHaveLength(0)
+  await writeFile(syncOptions.centralKeyFile, reportKey, 'utf8')
+  expect(await sendUsagePage(syncOptions, page, state.sourceInstanceId, timeoutMs)).toEqual({ accepted: 1, skipped: 0 })
+  const confirmed = await saveSyncProgress(directory, state, page.nextCursor)
+  const request = rangeRequest(binding)
+  expect(readRecoveryRequest(request)).toEqual(request)
+  const accepted = await prepareRecovery(directory, confirmed, request, syncOptions, timeoutMs)
+  expect(await readStoredSyncState(directory)).toEqual(accepted)
+  leak = true
+  await expect(advanceRecoveryPage(directory, accepted, syncOptions, timeoutMs)).rejects.toMatchObject({
+    code: 'unexpected_provider',
+  })
+  expect(await readStoredSyncState(directory)).toEqual(accepted)
+  expect(sentBatches).toHaveLength(1)
+  leak = false
+  const recovered = await advanceRecoveryPage(directory, accepted, syncOptions, timeoutMs)
+  expect(recovered).toMatchObject({ accepted: 0, skipped: 1, state: { cursor: 'scoped-head' } })
+  expect([...ledger]).toEqual([ridFor(state.sourceInstanceId, 'matching')])
+  expect(sentBatches[0]).toEqual(sentBatches[1])
+  expect(cursors).toEqual([dailyCursor, 'start', 'start'])
+})
 
 test('migrates on acceptance and repairs a missing time range while preserving the daily checkpoint', async () => {
   const sample = await fixture(cursor => {
@@ -345,6 +391,7 @@ test('validates the Options recovery scope and protects a damaged active checkpo
     { ...request, to: '2025-11-02T08:00:00+08:00' },
     { ...request, kind: 'cursor' },
     { ...request, binding: { ...binding, centralGatewayUrl: 'https://fixture-user@center.example/' } },
+    { ...request, binding: { ...binding, sourceProviderId: '' } },
   ]) {
     expect(() => readRecoveryRequest(damaged)).toThrow('invalid_recovery_request')
   }

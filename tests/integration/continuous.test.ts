@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { serveIngest } from '../../src/center/ingest.ts'
+import { openCenterLedger } from '../../src/center/ledger.ts'
+import { openSyncState, saveSyncProgress, type SyncState } from '../../src/state/store.ts'
 
 const keyId = 'fixture-key-id'
 const reportKey = 'fixture-report-key'
@@ -30,7 +34,7 @@ beforeEach(async () => {
   scratchRoot = await realpath(tmpdir())
   directory = await mkdtemp(join(scratchRoot, 'mpu-phase2-'))
   stateFile = join(directory, 'magpie-usage-hub', 'state.json')
-  await writeFile(join(directory, 'fixture.key'), `${reportKey}\n`)
+  await writeFile(join(directory, 'fixture.key'), `${reportKey}\n`, { mode: 0o600 })
 })
 
 afterEach(async () => {
@@ -40,7 +44,7 @@ afterEach(async () => {
   await rm(target, { recursive: true })
 })
 
-function startHost(source: URL, center: URL, initialMode: 'now' | 'start' = 'now') {
+function startHost(source: URL, center: URL, initialMode: 'now' | 'start' = 'now', sourceProviderId?: string) {
   const options = {
     enabled: true,
     mode: 'continuous',
@@ -48,14 +52,18 @@ function startHost(source: URL, center: URL, initialMode: 'now' | 'start' = 'now
     centralGatewayUrl: center.href,
     centralKeyFile: join(directory, 'fixture.key'),
     sourceCallerKeyId: keyId,
+    ...(sourceProviderId === undefined ? {} : { role: 'source', sourceProviderId }),
     initialMode,
     pollIntervalSec: 5,
     requestTimeoutSec: 15,
   }
   const host = Bun.spawn([process.execPath, '-e', `
-    import plugin from './server.ts'
-    const result = plugin.server({ directory: process.env.MPU_TEST_DIRECTORY }, JSON.parse(process.env.MPU_TEST_OPTIONS))
-    if (JSON.stringify(result) !== '{}') process.exit(3)
+    import { join } from 'node:path'
+    import { createDiagnostics } from './src/diagnostics.ts'
+    import { readSyncOptions } from './src/options.ts'
+    import { runContinuousSync } from './src/sync/continuous.ts'
+    const options = readSyncOptions(JSON.parse(process.env.MPU_TEST_OPTIONS))
+    await runContinuousSync(join(process.env.MPU_TEST_DIRECTORY, 'magpie-usage-hub'), options, createDiagnostics(null, true))
   `], {
     cwd: join(import.meta.dir, '../..'),
     env: { ...process.env, MPU_TEST_DIRECTORY: directory, MPU_TEST_OPTIONS: JSON.stringify(options) },
@@ -70,8 +78,8 @@ async function stopHost(host: (typeof hosts)[number]): Promise<void> {
   await host.exited
 }
 
-async function readState() {
-  return Bun.file(stateFile).json() as Promise<{ sourceInstanceId: string; cursor: string | null }>
+async function readState(file = stateFile) {
+  return Bun.file(file).json() as Promise<SyncState>
 }
 
 async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 4_000) {
@@ -83,8 +91,8 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 4_00
   throw new Error('fixture observation timed out')
 }
 
-async function hasCursor(cursor: string): Promise<boolean> {
-  return await Bun.file(stateFile).exists() && (await readState()).cursor === cursor
+async function hasCursor(cursor: string, file = stateFile): Promise<boolean> {
+  return await Bun.file(file).exists() && (await readState(file)).cursor === cursor
 }
 
 function fixturePage(cursor: string, rows: unknown[] = [], hasMore = false) {
@@ -137,6 +145,87 @@ test('empty and excluded pages advance, with at most five pages in a round', asy
     await source.stop(true)
   }
 })
+
+test('a trial starts at now and advances only after Hub ingestion commits', async () => {
+  const stateDirectory = dirname(stateFile)
+  const trialStateFile = join(stateDirectory, 'trial', 'state.json')
+  const ingestKeyFile = join(directory, 'ingest-keys.json')
+  const ledgerPath = join(directory, 'usage.sqlite')
+  const trialKey = 'a'.repeat(64)
+  const row = { ...sourceRow, id: 'trial-fixture', t: new Date().toISOString() }
+  const queries: Record<string, string>[] = []
+  let stateAtNow: SyncState | undefined
+  let callerSent = false
+  await mkdir(stateDirectory)
+  await writeFile(join(directory, 'fixture.key'), `${trialKey}\n`)
+  await writeFile(ingestKeyFile, '[]', { mode: 0o600 })
+  const database = openCenterLedger(ledgerPath)
+  const center = serveIngest(database, ingestKeyFile, 0, '127.0.0.1')
+  const source = Bun.serve({
+    hostname: '127.0.0.1', port: 0,
+    async fetch(request) {
+      const url = new URL(request.url)
+      if (url.pathname === '/') return Response.json({ name: 'magpie', pid: process.pid })
+      if (url.pathname !== '/v1/magpie/usage/requests' || request.method !== 'GET') return new Response(null, { status: 404 })
+      const query = Object.fromEntries(url.searchParams)
+      queries.push(query)
+      if (query.cursor === 'now') stateAtNow = await readState(trialStateFile)
+      if (query.cursor === 'trial-before' && callerSent) return fixturePage('trial-after', [row])
+      return fixturePage(query.cursor === 'trial-after' ? 'trial-after' : 'trial-before')
+    },
+  })
+  try {
+    const legacy = await saveSyncProgress(stateDirectory, await openSyncState(stateDirectory, {
+      sourceGatewayUrl: source.url.href, sourceCallerKeyId: keyId, centralGatewayUrl: center.url.href, initialMode: 'start',
+    }), 'legacy-cursor')
+    const host = startHost(source.url, center.url, 'now', row.provider)
+    let stderr = ''
+    const errors = host.stderr.pipeTo(new WritableStream<Uint8Array>({
+      write(chunk) { stderr += Buffer.from(chunk).toString('utf8') },
+    }))
+    const rows = database.query('SELECT rid FROM usage_reports')
+    await waitFor(() => hasCursor('trial-before', trialStateFile))
+    const checkpoint = await readState(trialStateFile)
+    const { sourceInstanceId } = checkpoint
+    const filters = { via: 'through', limit: '500', callerKey: keyId, provider: row.provider }
+    expect(queries).toEqual([{ ...filters, cursor: 'now' }])
+    expect(stateAtNow).toMatchObject({ sourceInstanceId, cursor: null, lastConfirmedAt: null })
+    expect(sourceInstanceId).not.toBe(legacy.sourceInstanceId)
+    expect(rows.all()).toEqual([])
+
+    await writeFile(ingestKeyFile, JSON.stringify([{ sourceInstanceId, key: trialKey }]))
+    database.exec(`CREATE TRIGGER reject_trial BEFORE INSERT ON usage_reports
+      BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END`)
+    callerSent = true
+    await waitFor(() => stderr.includes('"status":"retrying","stage":"center","code":"upstream_failure","httpStatus":503'), 9_000)
+    expect(await readState(trialStateFile)).toEqual(checkpoint)
+    expect(rows.all()).toEqual([])
+
+    database.exec('DROP TRIGGER reject_trial')
+    await waitFor(() => hasCursor('trial-after', trialStateFile), 16_000)
+    await stopHost(host)
+    await errors
+    expect(queries).toEqual(['now', 'trial-before', 'trial-before'].map(cursor => ({ ...filters, cursor })))
+    expect(await readState(trialStateFile)).toMatchObject({ sourceInstanceId, cursor: 'trial-after' })
+    expect(await readState()).toEqual(legacy)
+  } finally {
+    await source.stop(true)
+    await center.stop(true)
+    database.close(true)
+  }
+
+  using reopened = openCenterLedger(ledgerPath)
+  const { sourceInstanceId } = await readState(trialStateFile)
+  const rid = `mpu1.${sourceInstanceId}.${createHash('sha256').update(row.id).digest('hex')}`
+  const stored = reopened.query<{ rid: string; source_instance_id: string; called_at_ms: number; row_json: string }, []>(
+    'SELECT rid, source_instance_id, called_at_ms, row_json FROM usage_reports',
+  ).all()
+  expect(stored).toEqual([{ rid, source_instance_id: sourceInstanceId, called_at_ms: Date.parse(row.t), row_json: expect.any(String) }])
+  expect(JSON.parse(stored[0].row_json)).toEqual({
+    rid, t: row.t, agent: row.agent, provider: row.provider, model: row.model,
+    status: row.status, in: row.in, out: row.out, cost: row.cost,
+  })
+}, 30_000)
 
 test('a temporary center failure retries the same row and then saves the page', async () => {
   const requests: string[] = []

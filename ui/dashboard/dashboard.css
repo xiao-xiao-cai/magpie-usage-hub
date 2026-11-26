@@ -1,0 +1,41 @@
+:root {
+  color-scheme: light dark;
+  color: var(--magpie-text, CanvasText);
+  background: var(--magpie-bg, Canvas);
+  font: 14px/1.5 system-ui, sans-serif;
+  --line: var(--magpie-border, color-mix(in srgb, CanvasText 20%, Canvas));
+  --shade: color-mix(in srgb, CanvasText 5%, Canvas);
+}
+
+body { margin: 0; }
+main { max-width: 76rem; margin: auto; padding: 1.3rem 1rem 2rem; }
+header, .detail-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; }
+h1 { margin: .2rem 0 0; font-size: 1.55rem; }
+h2 { margin: 0; font-size: 1.1rem; }
+p { margin: .55rem 0; }
+section { margin-top: .9rem; padding-block-start: .9rem; border-block-start: 1px solid var(--line); }
+.muted, .notice { color: var(--magpie-muted, GrayText); }
+.notice { min-height: 1.5em; }
+.controls, .pagination { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; max-width: 100%; }
+button, select { font: inherit; color: ButtonText; background: ButtonFace; border: 1px solid var(--line); border-radius: .35rem; min-height: 2.15rem; padding: .28rem .65rem; }
+select { max-width: min(22rem, 100%); }
+button { cursor: pointer; }
+button[aria-disabled="true"] { color: GrayText; cursor: default; }
+:focus-visible { outline: 2px solid AccentColor; outline-offset: 2px; }
+.table-scroll { overflow: auto; margin-block: .55rem; }
+table { width: 100%; border-spacing: 0; }
+.summary { min-width: 38rem; }
+.detail { min-width: 49rem; }
+th, td { padding: .52rem .65rem; text-align: left; vertical-align: top; border-block-end: 1px solid var(--line); }
+thead { background: var(--shade); }
+td { font-variant-numeric: tabular-nums; }
+td:not(.record-id) { min-width: 3rem; }
+th[scope="row"] { font-weight: 500; }
+.combined { font-weight: 650; }
+.combined th { font-weight: inherit; }
+.identifier, .record-id { font: .82rem/1.55 ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+.record-id { width: 13rem; }
+.model { min-width: 8rem; max-width: 18rem; overflow-wrap: anywhere; }
+.called-at { min-width: 8rem; }
+.pagination { justify-content: end; }
+.pagination button { width: 2.25rem; }

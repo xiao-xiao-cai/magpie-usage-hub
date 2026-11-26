@@ -3,15 +3,28 @@ const displayTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', time
 const savedRevision = new URLSearchParams(location.hash.slice(1)).get('revision')
 const phases = new Map([
   ['starting', '正在启动'], ['disabled', '配置已停用'], ['waiting_lock', '等待上一宿主交接'],
+  ['pairing', '正在与中心配对'], ['paused', '中心已暂停采集'],
   ['syncing', '正在同步'], ['recovering', '正在回填'], ['idle', '等待下次轮询'],
-  ['retrying', '退避重试'], ['blocked', '已阻塞'],
+  ['retrying', '退避重试'], ['blocked', '已阻塞'], ['receiving', '中心接收就绪'],
 ])
 const failureText = new Map([
-  ['unauthorized', '请核对网关权限和专用上报 Key。'],
+  ['unauthorized', '请在中心核对来源登记及上报凭据。'],
   ['binding_mismatch', '请恢复与持久进度一致的来源、采集条件、原中心和首次起点。'],
-  ['cursor_reset', '源游标已重置，请在配置页提交游标恢复。'],
-  ['cursor_expired', '源游标已过期，请在配置页提交游标恢复。'],
+  ['identity_mismatch', '请核对配对来源与本机保存的来源身份。'],
+  ['cursor_reset', '源游标已重置，请核对源账本当前可见范围和恢复起点。'],
+  ['cursor_expired', '源游标已过期，请核对源账本当前可见范围和恢复起点。'],
+  ['pairing_code_required', '请在本机配置中心签发的配对码文件。'],
+  ['invalid_pairing_code_file', '请核对配对码文件的内容、路径及读取权限。'],
+  ['pairing_code_rejected', '配对码未被中心接受，请在来源管理中核对配对状态和有效期。'],
+  ['managed_credential_invalid', '本机保存的节点凭据无法使用，请核对状态目录及其备份。'],
+  ['managed_credential_missing', '本机凭据缺失，请核对状态目录及其备份。'],
+  ['managed_config_invalid', '请核对中心下发的来源设置及部署版本。'],
+  ['source_paused', '中心暂停了该来源，节点将继续查询启停设置。'],
   ['key_file_unreadable', '请核对上报凭据文件路径和宿主账户的读取权限。'],
+  ['unexpected_provider', '请核对来源用量账本中的供应商 ID 与游标筛选。'],
+  ['center_ledger_unavailable', '请检查中心账本目录与持久挂载。'],
+  ['ingest_credentials_unavailable', '请检查中心凭据文件的权限和来源登记。'],
+  ['ingest_listener_unavailable', '请检查中心上报监听地址和端口。'],
   ['recovery_binding_mismatch', '请求的配置绑定与当前来源进度不同。'],
   ['recovery_no_checkpoint', '需要已有的日常同步进度。首次使用时请撤回请求并等待初始进度就绪。'],
   ['recovery_busy', '已有回填任务，请在该任务结束后重新确认范围。'],
@@ -53,7 +66,7 @@ function showStatus(status) {
     return
   }
   byId('status').hidden = false
-  text('phase', phases.get(status.phase) ?? '状态未知')
+  text('phase', status.phase === 'idle' && status.ready ? '就绪 · 等待下次轮询' : phases.get(status.phase) ?? '状态未知')
   text('credential', status.credentialConfigured ? '已配置' : '待配置')
   text('loaded-revision', status.loadedRevision ?? '暂无修订号')
   text('applied-revision', status.appliedRevision ?? '暂无采用记录')

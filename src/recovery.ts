@@ -1,3 +1,4 @@
+import { isProviderId } from './options.ts'
 import type { SyncBinding } from './state/store.ts'
 
 type RecoveryScope = Readonly<{ id: string; from: string; binding: SyncBinding }>
@@ -41,10 +42,11 @@ function readGatewayRoot(value: unknown): URL {
 export function decodeRecoveryRequest(raw: unknown): RecoveryRequest {
   if (!isObject(raw) || !isObject(raw.binding)) throw new RecoveryRequestError()
   const { id, kind } = raw
-  const { sourceCallerKeyId, initialMode } = raw.binding
+  const { sourceCallerKeyId, sourceProviderId, initialMode } = raw.binding
   if (typeof id !== 'string' || !uuidV4.test(id)
     || typeof sourceCallerKeyId !== 'string' || sourceCallerKeyId === 'none'
-    || !/^[a-zA-Z0-9_-]+$/.test(sourceCallerKeyId) || (initialMode !== 'now' && initialMode !== 'start')) {
+    || !/^[a-zA-Z0-9_-]+$/.test(sourceCallerKeyId) || (sourceProviderId !== undefined && !isProviderId(sourceProviderId))
+    || (initialMode !== 'now' && initialMode !== 'start')) {
     throw new RecoveryRequestError()
   }
   const source = readGatewayRoot(raw.binding.sourceGatewayUrl)
@@ -56,6 +58,7 @@ export function decodeRecoveryRequest(raw: unknown): RecoveryRequest {
   const binding: SyncBinding = {
     sourceGatewayUrl: source.href,
     sourceCallerKeyId,
+    ...(sourceProviderId === undefined ? {} : { sourceProviderId }),
     centralGatewayUrl: center.href,
     initialMode,
   }

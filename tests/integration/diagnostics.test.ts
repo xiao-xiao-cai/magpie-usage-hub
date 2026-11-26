@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { runInNewContext } from 'node:vm'
 import { createDiagnostics, serveDiagnostics, updateDiagnosticProgress } from '../../src/diagnostics.ts'
+import { requestDirect } from '../../src/gateway/direct.ts'
 import type { SyncState } from '../../src/state/store.ts'
 
 const revision = 'b02166b2-07f4-4208-aa01-8dfb9acf244e'
@@ -59,6 +60,108 @@ test('the loopback status service exposes a read-only summary of committed recov
     expect(write.headers.get('allow')).toBe('GET')
     expect((await fetch(url, { headers: { Origin: 'https://fixture-unrelated.example' } })).status).toBe(403)
     expect((await fetch(new URL('state.json', server.url))).status).toBe(404)
+  } finally {
+    await server.stop(true)
+  }
+})
+
+test('the center dashboard serves relative assets and read-only usage on loopback', async () => {
+  const queried: string[] = []
+  const server = serveDiagnostics(createDiagnostics(revision, true), 0, async url => {
+    const period = url.searchParams.get('period')
+    queried.push(`${url.pathname}:${period}`)
+    if (period === 'fail') throw new Error('fixture private error')
+    return Response.json({ period })
+  })
+  function read(path: URL, init: Partial<Parameters<typeof requestDirect>[1]> = {}) {
+    return requestDirect(path, { method: 'GET', ...init }, AbortSignal.timeout(1_000))
+  }
+  try {
+    expect(server.url.hostname).toBe('127.0.0.1')
+    const dashboard = new URL('dashboard/', server.url)
+    const page = await read(dashboard)
+    expect(page.status).toBe(200)
+    expect(page.headers.get('content-type')).toContain('text/html')
+    const csp = page.headers.get('content-security-policy')
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain("connect-src 'self'")
+    expect(csp).toContain("script-src 'self'")
+    const html = await page.text()
+    expect(html).toContain('href="dashboard.css"')
+    expect(html).toContain('src="dashboard.js"')
+    for (const [asset, mime, marker] of [
+      ['dashboard.css', 'text/css', '.summary'], ['dashboard.js', 'text/javascript', '../api/usage'],
+    ]) {
+      const response = await read(new URL(asset, dashboard))
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toContain(mime)
+      expect(await response.text()).toContain(marker)
+    }
+
+    const api = new URL('../api/usage?period=7d', dashboard)
+    const response = await read(api, { headers: { Origin: 'null' } })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('access-control-allow-origin')).toBe('null')
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ period: '7d' })
+    const post = await read(api, { method: 'POST' })
+    expect(post.status).toBe(405)
+    expect(post.headers.get('allow')).toBe('GET')
+    const foreign = await read(api, { headers: { Origin: 'https://fixture-unrelated.example' } })
+    expect(foreign.status).toBe(403)
+    expect(foreign.headers.get('access-control-allow-origin')).toBeNull()
+    expect((await read(api, { headers: { Host: 'fixture-unrelated.example' } })).status).toBe(403)
+    const unavailable = await read(new URL('../api/usage?period=fail', dashboard))
+    expect(unavailable.status).toBe(503)
+    expect(await unavailable.json()).toEqual({ error: { code: 'dashboard_unavailable' } })
+    expect(queried).toEqual(['/api/usage:7d', '/api/usage:fail'])
+  } finally {
+    await server.stop(true)
+  }
+})
+
+test('source diagnostics do not expose the center dashboard or usage API', async () => {
+  const server = serveDiagnostics(createDiagnostics(revision, true), 0)
+  try {
+    for (const path of ['dashboard/', 'dashboard/dashboard.css', 'dashboard/dashboard.js', 'api/usage']) {
+      const response = await requestDirect(new URL(path, server.url), { method: 'GET' }, AbortSignal.timeout(1_000))
+      expect(response.status).toBe(404)
+    }
+  } finally {
+    await server.stop(true)
+  }
+})
+
+test('source management requires the token delivered with the protected management page', async () => {
+  const mutations: unknown[] = []
+  const server = serveDiagnostics(createDiagnostics(revision, false), 0, undefined, async request => {
+    mutations.push(await request.json())
+    return Response.json({ saved: true }, { status: 201 })
+  })
+  const endpoint = new URL('api/sources', server.url)
+  const request = (headers: Record<string, string>, method = 'POST') => fetch(endpoint, {
+    method, headers: { 'Content-Type': 'application/json', ...headers },
+    ...(method === 'POST' ? { body: '{"name":"fixture"}' } : {}),
+  })
+  try {
+    const page = await fetch(new URL('sources/', server.url))
+    expect(page.status).toBe(200)
+    expect(page.headers.get('access-control-allow-origin')).toBeNull()
+    expect(page.headers.get('cache-control')).toBe('no-store')
+    expect(page.headers.get('content-security-policy')).toContain("frame-ancestors 'self'")
+    const token = /name="usage-admin-token" content="([a-f0-9]{64})"/.exec(await page.text())?.[1]
+    if (!token) throw new Error('management page did not provide a fixture token')
+
+    const preflight = await request({ Origin: 'null', 'Access-Control-Request-Method': 'POST' }, 'OPTIONS')
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers.get('access-control-allow-headers')).toContain('X-Magpie-Usage-Admin')
+    expect((await request({ Origin: 'null' })).status).toBe(403)
+    expect((await request({ Origin: 'https://fixture-unrelated.example', 'X-Magpie-Usage-Admin': token })).status).toBe(403)
+    expect(mutations).toEqual([])
+    const saved = await request({ Origin: 'null', 'X-Magpie-Usage-Admin': token })
+    expect(saved.status).toBe(201)
+    expect(saved.headers.get('cache-control')).toBe('no-store')
+    expect(mutations).toEqual([{ name: 'fixture' }])
   } finally {
     await server.stop(true)
   }

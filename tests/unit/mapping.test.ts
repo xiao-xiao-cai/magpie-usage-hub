@@ -95,6 +95,16 @@ test('excludes other origins and shared rows and rejects out-of-scope gateway ro
   expect(() => map({ id: '' })).toThrow('invalid_row_id')
 })
 
+test('requires the ledger provider ID as well as the dedicated caller and keeps the same rid', () => {
+  const providerId = sourceRow.provider
+  const scoped = (overrides: Record<string, unknown>) =>
+    mapUsageRow({ ...sourceRow, ...overrides }, sourceId, callerKeyId, providerId)
+  expect(scoped({ providerName: 'Synthetic Provider' })).toEqual(report())
+  expect(() => scoped({ provider: 'other-provider', providerName: providerId })).toThrow('unexpected_provider')
+  expect(() => scoped({ provider: undefined })).toThrow('unexpected_provider')
+  expect(() => scoped({ callerKeyId: 'other-caller' })).toThrow('unexpected_caller_key')
+})
+
 test('preserves known usage and only emits the controlled cancellation reason', () => {
   expect(report({ priced: false, cost: 42 })).not.toHaveProperty('cost')
   expect(report({ priced: true, cost: 0.012 })).toHaveProperty('cost', 0.012)

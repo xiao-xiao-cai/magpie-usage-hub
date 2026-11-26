@@ -46,7 +46,9 @@
 
   function readDirtyFields() {
     const baseline = options.settingsView(saved ?? {})
-    return new Set(Object.keys(inputs).filter(name => inputValue(name) !== baseline[name]))
+    const fields = new Set(Object.keys(inputs).filter(name => inputValue(name) !== baseline[name]))
+    if (fields.has('role') || fields.has('mode')) fields.add('enabled')
+    return fields
   }
 
   function renderSettings(newSaved, reset) {
@@ -57,6 +59,8 @@
       else inputs[name].value = value
     }
     element('key-state').textContent = options.credentialConfigured(saved) ? '已配置' : '待配置'
+    element('pairing-code-state').textContent = options.credentialConfigured(saved, 'pairingCodeFile') ? '已配置路径' : ''
+    element('ingest-key-state').textContent = options.credentialConfigured(saved, 'ingestKeyFile') ? '已配置' : '可选'
     dirtyFields = readDirtyFields()
   }
 
@@ -64,27 +68,41 @@
     const link = element('diagnostic-link')
     const guide = element('diagnostic-guide')
     const revision = options.revision(saved?.configRevision)
+    const center = saved?.role === 'center'
     element('revision-value').textContent = revision
     element('settings-revision').hidden = !revision
     const service = window.magpie?.service
-    if (!service) return
-    const url = new URL(service)
-    if (url.origin !== new URL(window.location.href).origin) return
-    if (!revision) {
-      link.hidden = true
-      guide.textContent = '保存设置后可打开运行诊断。'
+    const href = options.pageServiceLink(service, window.location.href, saved)
+    link.hidden = !href
+    link.textContent = center ? '打开用量看板' : '打开运行诊断'
+    guide.textContent = center ? '在 Magpie Web 的插件页打开中心看板。' : '在 Magpie Web 的插件页打开运行诊断。'
+    if (!href) {
+      link.removeAttribute('href')
+      if (service && center && saved.enabled !== true) guide.textContent = '启用中心并保存后可打开用量看板。'
+      if (service && !center && !revision) guide.textContent = '保存设置后可打开运行诊断。'
       return
     }
-    url.hash = `revision=${revision}`
-    link.href = url.href
-    link.hidden = false
-    guide.textContent = '在运行诊断核对后台采用的修订与回填进度。'
+    link.href = href
+    guide.textContent = center ? '在看板查看用量或打开「来源管理」。'
+      : saved?.mode === 'managed' ? '在运行诊断核对配对与同步状态。' : '在运行诊断核对后台采用的修订与回填进度。'
   }
 
   function updateAvailability() {
     const busy = snapshot.writing || snapshot.refreshing
     const saveBlocked = !saved || busy || snapshot.pending || Boolean(snapshot.differences)
     const hasDraft = dirtyFields.size > 0
+    const center = inputs.role.value === 'center'
+    const managed = inputs.mode.value === 'managed'
+    const sourceRecovery = !center && !managed && saved?.role !== 'center' && saved?.mode === 'continuous'
+    element('source-settings').hidden = center
+    element('source-settings').disabled = center
+    element('center-settings').hidden = !center
+    element('center-settings').disabled = !center
+    element('managed-settings').hidden = !managed
+    element('managed-settings').disabled = !managed
+    element('manual-settings').hidden = managed
+    element('manual-settings').disabled = managed
+    element('recovery-panel').hidden = !sourceRecovery
     element('reload-options').disabled = snapshot.writing
     element('settings-fields').disabled = !saved || snapshot.writing || snapshot.pending
     element('save-settings').disabled = saveBlocked
@@ -93,10 +111,10 @@
     element('settings-form').setAttribute('aria-busy', String(busy))
     element('recovery-form').setAttribute('aria-busy', String(busy))
 
-    const binding = saved && options.recoveryBinding(saved)
-    const hasRequest = Boolean(saved?.recoveryRequest)
+    const binding = sourceRecovery && saved && options.recoveryBinding(saved)
+    const hasRequest = sourceRecovery && Boolean(saved?.recoveryRequest)
     element('submitted-request').hidden = !hasRequest
-    element('withdraw-request').disabled = saveBlocked || hasDraft
+    element('withdraw-request').disabled = !hasRequest || saveBlocked || hasDraft
     element('recovery-fields').disabled = saveBlocked || hasDraft || !binding
     element('recovery-end-field').hidden = recoveryKind.value !== 'range'
     let hint = ''
@@ -143,7 +161,8 @@
       message(recoveryMessage, '')
     }
     if (result === 'confirmed') {
-      if (action === 'settings') message(settingsMessage, '已保存。后台采用状态见 Web 诊断。')
+      if (action === 'settings') message(settingsMessage, saved.role === 'center' ? '中心设置已保存。'
+        : '已保存。后台采用状态见 Web 诊断。')
       if (action === 'recovery') {
         recoveryFrom.value = ''
         recoveryTo.value = ''
@@ -167,6 +186,21 @@
     }
   }
 
+  function bindSubmit(formId, buttonId, handler) {
+    const form = element(formId)
+    const button = element(buttonId)
+    const submit = event => {
+      event.preventDefault()
+      if (!button.disabled) form.dispatchEvent(new Event('submit', { cancelable: true }))
+    }
+    button.addEventListener('click', submit)
+    form.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.isComposing && event.target.tagName === 'INPUT'
+        && event.target.type !== 'checkbox') submit(event)
+    })
+    form.addEventListener('submit', handler)
+  }
+
   function preview(action, changes, rows, title, note, buttonLabel) {
     confirmationAction = { action, changes, saved }
     const fields = element('confirmation-fields')
@@ -187,7 +221,9 @@
   element('reload-options').addEventListener('click', () => void session.refresh())
   element('rebase-options').addEventListener('click', session.adoptLatest)
   for (const input of Object.values(inputs)) {
-    input.addEventListener('input', () => {
+    const changesRole = input === inputs.role || input === inputs.mode
+    input.addEventListener(changesRole ? 'change' : 'input', () => {
+      if (changesRole) inputs.enabled.checked = false
       dirtyFields = readDirtyFields()
       updateAvailability()
       if (!snapshot.differences && !snapshot.pending) {
@@ -196,11 +232,13 @@
     })
   }
 
-  element('save-settings').addEventListener('click', () => {
+  bindSubmit('settings-form', 'save-settings', event => {
+    event.preventDefault()
     if (element('save-settings').disabled || element('settings-fields').disabled) return
     const draft = Object.fromEntries(Object.keys(inputs).map(name => [name, inputValue(name)]))
     draft.pollIntervalSec = inputs.pollIntervalSec.valueAsNumber
     draft.requestTimeoutSec = inputs.requestTimeoutSec.valueAsNumber
+    draft.ingestPort = inputs.ingestPort.valueAsNumber
     try {
       void session.submit('settings', options.settingsPatch(draft, saved))
     } catch (error) {
@@ -209,7 +247,8 @@
   })
 
   recoveryKind.addEventListener('change', updateAvailability)
-  element('review-recovery').addEventListener('click', () => {
+  bindSubmit('recovery-form', 'review-recovery', event => {
+    event.preventDefault()
     if (element('recovery-fields').disabled) return
     try {
       const binding = options.recoveryBinding(saved)
@@ -217,10 +256,11 @@
       const { kind, from, to } = draft
       const isRange = kind === 'range'
       const mode = binding.initialMode === 'now' ? '从现在开始' : '读取可见历史'
+      const provider = binding.sourceProviderId ? `，供应商 ID 为 ${binding.sourceProviderId}` : ''
       preview('recovery', { recoveryRequest: draft }, [
         ['本机源网关', binding.sourceGatewayUrl],
         ['原中心', binding.centralGatewayUrl],
-        ['筛选条件', `经源网关调用（through），专用测试 Key ID 为 ${binding.sourceCallerKeyId}，首次起点为「${mode}」`],
+        ['筛选条件', `经源网关调用（through），专用测试 Key ID 为 ${binding.sourceCallerKeyId}${provider}，首次起点为「${mode}」`],
         ['起点（含）', from],
         ['截止', to ? `${to}（不含）` : '源端读到的当前进度'],
       ], isRange ? '确认补齐时间段' : '确认恢复失效游标', isRange

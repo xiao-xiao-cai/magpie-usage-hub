@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { SyncState } from './state/store.ts'
 
 export const diagnosticPort = 3493
@@ -12,7 +13,8 @@ type DiagnosticStatus = {
   schema: 'magpie-usage-hub/status-v1'
   loadedRevision: string | null
   appliedRevision: string | null
-  phase: 'starting' | 'disabled' | 'waiting_lock' | 'syncing' | 'recovering' | 'idle' | 'retrying' | 'blocked'
+  phase: 'starting' | 'disabled' | 'waiting_lock' | 'pairing' | 'paused' | 'syncing' | 'recovering' | 'idle' | 'retrying' | 'blocked' | 'receiving'
+  ready: boolean
   credentialConfigured: boolean
   lastAttemptAt: string | null
   lastConfirmedAt: string | null
@@ -31,7 +33,7 @@ type DiagnosticStatus = {
   } | null
 }
 
-type DiagnosticUpdate = Partial<Omit<DiagnosticStatus, 'schema' | 'loadedRevision' | 'credentialConfigured'>>
+type DiagnosticUpdate = Partial<Omit<DiagnosticStatus, 'schema' | 'loadedRevision'>>
 
 export function createDiagnostics(loadedRevision: string | null, credentialConfigured: boolean) {
   let status: DiagnosticStatus = {
@@ -40,6 +42,7 @@ export function createDiagnostics(loadedRevision: string | null, credentialConfi
     credentialConfigured,
     appliedRevision: null,
     phase: 'starting',
+    ready: false,
     lastAttemptAt: null,
     lastConfirmedAt: null,
     lastPage: null,
@@ -69,6 +72,7 @@ export function updateDiagnosticProgress(diagnostics: Diagnostics, state: SyncSt
     .at(-1) ?? null
   const progress = selected && 'pages' in selected ? selected : null
   diagnostics.update({
+    ready: state.cursor !== null,
     lastConfirmedAt: confirmedAt,
     recovery: selected ? {
       status: 'status' in selected ? selected.status : 'running',
@@ -88,12 +92,31 @@ const assets = new Map([
   ['/status.js', ['status.js', 'text/javascript; charset=utf-8']],
   ['/status.css', ['status.css', 'text/css; charset=utf-8']],
 ])
+const dashboardAssets = new Map([
+  ['/dashboard/', ['dashboard/index.html', 'text/html; charset=utf-8']],
+  ['/dashboard/dashboard.js', ['dashboard/dashboard.js', 'text/javascript; charset=utf-8']],
+  ['/dashboard/dashboard.css', ['dashboard/dashboard.css', 'text/css; charset=utf-8']],
+])
+const managementAssets = new Map([
+  ['/sources/sources.js', ['sources/sources.js', 'text/javascript; charset=utf-8']],
+  ['/sources/sources.css', ['sources/sources.css', 'text/css; charset=utf-8']],
+])
+const managementPaths = new Set(['/api/sources', '/api/sources/settings', '/api/sources/pairing'])
+const adminHeader = 'X-Magpie-Usage-Admin'
+type DashboardQuery = (url: URL) => Promise<Response>
+type ManageSources = (request: Request) => Response | Promise<Response>
 
-export function serveDiagnostics(diagnostics: Diagnostics, port = diagnosticPort) {
+export function serveDiagnostics(
+  diagnostics: Diagnostics, port = diagnosticPort, dashboard?: DashboardQuery, manage?: ManageSources,
+) {
+  const adminToken = manage ? randomBytes(32).toString('hex') : ''
+  const adminTokenBytes = Buffer.from(adminToken, 'utf8')
   return Bun.serve({
     hostname: '127.0.0.1',
     port,
-    fetch(request, server) {
+    maxRequestBodySize: 16 * 1024,
+    development: false,
+    async fetch(request, server) {
       const headers = new Headers({
         'Cache-Control': 'no-store',
         'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'",
@@ -105,14 +128,52 @@ export function serveDiagnostics(diagnostics: Diagnostics, port = diagnosticPort
         return new Response(null, { status: 403, headers })
       }
       headers.set('Access-Control-Allow-Origin', 'null')
+      const url = new URL(request.url)
+      const path = url.pathname
+      if (manage && managementPaths.has(path)) {
+        if (request.method === 'OPTIONS' && origin === 'null') {
+          headers.set('Access-Control-Allow-Headers', `Content-Type, ${adminHeader}`)
+          headers.set('Access-Control-Allow-Methods', 'GET, POST')
+          return new Response(null, { status: 204, headers })
+        }
+        const presented = Buffer.from(request.headers.get(adminHeader) ?? '', 'utf8')
+        if (presented.length !== adminTokenBytes.length || !timingSafeEqual(presented, adminTokenBytes)) {
+          return Response.json({ error: { code: 'admin_token_invalid' } }, { status: 403, headers })
+        }
+        try {
+          const result = await manage(request)
+          headers.set('Content-Type', 'application/json; charset=utf-8')
+          const allow = result.headers.get('Allow')
+          if (allow) headers.set('Allow', allow)
+          return new Response(result.body, { status: result.status, headers })
+        } catch {
+          return Response.json({ error: { code: 'source_management_unavailable' } }, { status: 503, headers })
+        }
+      }
       if (request.method !== 'GET') {
         headers.set('Allow', 'GET')
         return new Response(null, { status: 405, headers })
       }
 
-      const path = new URL(request.url).pathname
+      if (manage && path === '/sources/') {
+        headers.delete('Access-Control-Allow-Origin')
+        headers.set('Content-Type', 'text/html; charset=utf-8')
+        headers.set('Content-Security-Policy', `${headers.get('Content-Security-Policy')}; frame-ancestors 'self'`)
+        const template = await Bun.file(new URL('../ui/sources/index.html', import.meta.url)).text()
+        return new Response(template.replace('__USAGE_ADMIN_TOKEN__', adminToken), { headers })
+      }
       if (path === '/api/status') return Response.json(diagnostics.getStatus(), { headers })
-      const asset = assets.get(path)
+      if (dashboard && path === '/api/usage') {
+        try {
+          const result = await dashboard(url)
+          headers.set('Content-Type', 'application/json; charset=utf-8')
+          return new Response(result.body, { status: result.status, headers })
+        } catch {
+          return Response.json({ error: { code: 'dashboard_unavailable' } }, { status: 503, headers })
+        }
+      }
+      const asset = assets.get(path) ?? (dashboard ? dashboardAssets.get(path) : undefined)
+        ?? (manage ? managementAssets.get(path) : undefined)
       if (asset === undefined) return new Response(null, { status: 404, headers })
       const [file, mimeType] = asset
       headers.set('Content-Type', mimeType)
@@ -121,11 +182,11 @@ export function serveDiagnostics(diagnostics: Diagnostics, port = diagnosticPort
   })
 }
 
-export function startDiagnostics(diagnostics: Diagnostics): void {
+export function startDiagnostics(diagnostics: Diagnostics, dashboard?: DashboardQuery, manage?: ManageSources): void {
   let reported = false
   function listen() {
     try {
-      serveDiagnostics(diagnostics).unref()
+      serveDiagnostics(diagnostics, diagnosticPort, dashboard, manage).unref()
       if (reported) console.info('[magpie-usage-hub]', '{"status":"diagnostic_ready"}')
     } catch (error) {
       if (!reported) {

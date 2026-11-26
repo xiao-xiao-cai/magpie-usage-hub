@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { lstat, open, readFile, rename, unlink, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isProviderId } from '../options.ts'
 import { decodeRecoveryRequest, type RecoveryRequest } from '../recovery.ts'
 import { StateError } from './errors.ts'
 
@@ -13,6 +14,7 @@ const windowsRenameRetryDelaysMs = [10, 25, 50, 100] as const
 export type SyncBinding = Readonly<{
   sourceGatewayUrl: string
   sourceCallerKeyId: string
+  sourceProviderId?: string
   centralGatewayUrl: string
   initialMode: 'now' | 'start'
 }>
@@ -101,12 +103,15 @@ function readIdentity(value: unknown): Identity {
 
 function readBinding(value: unknown): SyncBinding {
   if (!isObject(value)) throw new StateError('state_invalid')
-  const { sourceGatewayUrl, sourceCallerKeyId, centralGatewayUrl, initialMode } = value
+  const { sourceGatewayUrl, sourceCallerKeyId, sourceProviderId, centralGatewayUrl, initialMode } = value
   if (!isText(sourceGatewayUrl) || !isText(sourceCallerKeyId) || !isText(centralGatewayUrl)
+    || (sourceProviderId !== undefined && !isProviderId(sourceProviderId))
     || (initialMode !== 'now' && initialMode !== 'start')) {
     throw new StateError('state_invalid')
   }
-  return { sourceGatewayUrl, sourceCallerKeyId, centralGatewayUrl, initialMode }
+  return { sourceGatewayUrl, sourceCallerKeyId, centralGatewayUrl, initialMode,
+    ...(sourceProviderId === undefined ? {} : { sourceProviderId }),
+  }
 }
 
 function readCount(value: unknown): number {
@@ -209,6 +214,7 @@ function readState(value: unknown): SyncState {
 export function sameBinding(stored: SyncBinding, proposed: SyncBinding): boolean {
   return stored.sourceGatewayUrl === proposed.sourceGatewayUrl
     && stored.sourceCallerKeyId === proposed.sourceCallerKeyId
+    && stored.sourceProviderId === proposed.sourceProviderId
     && stored.centralGatewayUrl === proposed.centralGatewayUrl
     && stored.initialMode === proposed.initialMode
 }
@@ -238,8 +244,8 @@ async function readJson(directory: string, name: StateFile): Promise<unknown> {
   }
 }
 
-async function writeJson(
-  directory: string, name: StateFile, value: Identity | SyncState, operations = writeOperations,
+export async function writeStateJson(
+  directory: string, name: StateFile | 'registration.json', value: object, operations = writeOperations,
 ): Promise<void> {
   const temporary = join(directory, `.${name}.${randomUUID()}.tmp`)
   let created = false
@@ -286,24 +292,26 @@ export async function readStoredSyncState(directory: string): Promise<SyncState 
 }
 
 export async function openSyncState(
-  directory: string, proposed: SyncBinding, { requireExisting = false } = {},
+  directory: string, proposed: SyncBinding,
+  { requireExisting = false, sourceInstanceId: expectedId }: { requireExisting?: boolean; sourceInstanceId?: string } = {},
 ): Promise<SyncState> {
   const binding = readBinding(proposed)
   const { state, hasIdentity } = await readStorage(directory)
 
   if (state) {
+    if (expectedId !== undefined && state.sourceInstanceId !== expectedId) throw new StateError('identity_mismatch')
     if (!sameBinding(state.binding, binding)) throw new StateError('binding_mismatch')
     if (!hasIdentity) {
-      await writeJson(directory, 'identity.json', { version: identityVersion, sourceInstanceId: state.sourceInstanceId })
+      await writeStateJson(directory, 'identity.json', { version: identityVersion, sourceInstanceId: state.sourceInstanceId })
     }
     return state
   }
   if (requireExisting) throw new StateError('recovery_no_checkpoint')
 
-  const sourceInstanceId = randomUUID()
+  const sourceInstanceId = expectedId === undefined ? randomUUID() : readSourceInstanceId(expectedId)
   const initialState: SyncState = { version: 1, sourceInstanceId, binding, cursor: null, lastConfirmedAt: null }
-  await writeJson(directory, 'state.json', initialState)
-  await writeJson(directory, 'identity.json', { version: identityVersion, sourceInstanceId })
+  await writeStateJson(directory, 'state.json', initialState)
+  await writeStateJson(directory, 'identity.json', { version: identityVersion, sourceInstanceId })
   return initialState
 }
 
@@ -312,7 +320,7 @@ export async function saveSyncProgress(
 ): Promise<SyncState> {
   if (!isCursor(nextCursor) || state.recovery?.active) throw new StateError('state_invalid')
   const nextState = { ...state, cursor: nextCursor, lastConfirmedAt: new Date().toISOString() }
-  await writeJson(directory, 'state.json', nextState, operations)
+  await writeStateJson(directory, 'state.json', nextState, operations)
   return nextState
 }
 
@@ -320,6 +328,6 @@ export async function saveRecoveryState(
   directory: string, state: SyncState, operations = writeOperations,
 ): Promise<SyncState> {
   const validated = readState(state)
-  await writeJson(directory, 'state.json', validated, operations)
+  await writeStateJson(directory, 'state.json', validated, operations)
   return validated
 }

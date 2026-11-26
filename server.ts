@@ -1,6 +1,7 @@
 import { join } from 'node:path'
+import { readCenterOptions, runCenter } from './src/center/runtime.ts'
 import { createDiagnostics, startDiagnostics, updateDiagnosticProgress } from './src/diagnostics.ts'
-import { OptionsFailure, readConfigRevision, readSyncOptions } from './src/options.ts'
+import { isProviderId, OptionsFailure, readConfigRevision, readManagedSourceOptions, readSyncOptions } from './src/options.ts'
 import { readRecoveryRequest, RecoveryRequestError } from './src/recovery.ts'
 import { readStoredSyncState, StateError } from './src/state/store.ts'
 import { runContinuousSync } from './src/sync/continuous.ts'
@@ -11,21 +12,42 @@ export default {
     const saved: Record<string, unknown> = typeof options === 'object' && options !== null && !Array.isArray(options)
       ? Object.fromEntries(Object.entries(options)) : {}
     const revision = readConfigRevision(saved.configRevision)
-    const diagnostics = createDiagnostics(revision, typeof saved.centralKeyFile === 'string' && saved.centralKeyFile.trim() !== '')
-    startDiagnostics(diagnostics)
+    const credentialPath = saved.role === 'center' ? saved.ingestKeyFile
+      : saved.mode === 'managed' ? saved.pairingCodeFile : saved.centralKeyFile
+    const diagnostics = createDiagnostics(revision, typeof credentialPath === 'string' && credentialPath.trim() !== '')
+    const directory = join(input.directory, 'magpie-usage-hub')
     try {
-      const config = readSyncOptions(options)
-      const directory = join(input.directory, 'magpie-usage-hub')
+      if (saved.role === 'center') {
+        const center = readCenterOptions(saved)
+        if (center) {
+          let services: Awaited<ReturnType<typeof runCenter>>
+          startDiagnostics(diagnostics,
+            async url => services ? services.dashboard(url)
+              : Response.json({ error: { code: 'dashboard_unavailable' } }, { status: 503 }),
+            request => services?.manage ? services.manage(request)
+              : Response.json({ error: { code: 'source_management_unavailable' } }, { status: 503 }),
+          )
+          void runCenter(directory, center, diagnostics).then(result => { services = result })
+        } else {
+          diagnostics.update({ phase: 'disabled' })
+          startDiagnostics(diagnostics)
+        }
+        return {}
+      }
+      if (saved.role !== undefined && saved.role !== 'source') throw new OptionsFailure('invalid_role')
+      const config = saved.mode === 'managed' ? readManagedSourceOptions(saved) : readSyncOptions(options)
       if (config === null) {
         diagnostics.update({ phase: 'disabled' })
-        void readStoredSyncState(directory).then(state => {
+        const progress = saved.mode === 'managed' ? join(directory, 'managed')
+          : isProviderId(saved.sourceProviderId) ? join(directory, 'trial') : directory
+        void readStoredSyncState(progress).then(state => {
           if (state) updateDiagnosticProgress(diagnostics, state)
         }).catch((error: unknown) => {
           const code = error instanceof StateError ? error.code : 'state_read_failed'
           diagnostics.update({ failure: { stage: 'state', code } })
         })
       } else {
-        const request = readRecoveryRequest(saved.recoveryRequest)
+        const request = 'mode' in config ? undefined : readRecoveryRequest(saved.recoveryRequest)
         void runContinuousSync(directory, config, diagnostics, request)
       }
     } catch (error) {
@@ -34,6 +56,7 @@ export default {
       diagnostics.update({ phase: 'blocked', failure })
       console.warn('[magpie-usage-hub]', JSON.stringify({ status: 'blocked', ...failure }))
     }
+    startDiagnostics(diagnostics)
     return {}
   },
 }
