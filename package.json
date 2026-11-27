@@ -1,7 +1,7 @@
 {
   "name": "magpie-usage-hub",
-  "version": "0.4.0",
-  "description": "Manage reporting sources and view gateway usage across Magpie instances.",
+  "version": "0.5.0",
+  "description": "View native gateway usage from multiple Magpie instances in one dashboard.",
   "keywords": ["magpie-page"],
   "repository": {
     "type": "git",
@@ -20,8 +20,8 @@
   "magpie": {
     "name": "Magpie Usage Hub",
     "summary": {
-      "en": "Pair Magpie nodes, manage reporting from one center, and review gateway usage by source.",
-      "zh": "在中心配对并管理 Magpie 节点，按来源查看网关用量。"
+      "en": "Connect Magpie gateways with read-only keys and view usage by source.",
+      "zh": "通过只读 Key 接入 Magpie 网关，按来源查看原生用量。"
     },
     "page": {
       "title": "Magpie Usage Hub",

@@ -23,18 +23,17 @@
   font: inherit;
 }
 
-.source-check { align-self: end; display: flex; align-items: center; gap: .45rem; min-height: 2.15rem; }
+.source-check { align-self: start; display: flex; align-items: center; gap: .45rem; min-height: 2.15rem; margin-block-start: 1.7rem; }
 .source-check input { margin: 0; accent-color: var(--magpie-accent, AccentColor); }
 .source-actions { grid-column: 1 / -1; }
-#pairing-value { margin-top: .75rem; max-inline-size: 43rem; }
-#pairing-code { font-family: ui-monospace, Consolas, monospace; }
-#sources-table table { min-width: 40rem; }
-#sources-table th[scope="row"], #edit-scope { overflow-wrap: anywhere; }
-#sources-table th[scope="row"] { max-inline-size: 19rem; }
+#sources-table table { min-width: 35rem; }
+#sources-table th[scope="row"], #sources-table td, #latest-source { overflow-wrap: anywhere; }
+#sources-table th[scope="row"], #sources-table td { max-inline-size: 21rem; }
 button:disabled { cursor: default; color: GrayText; }
 .notice:empty { display: none; }
 main [hidden] { display: none; }
 
 @media (max-width: 37rem) {
   .source-fields { grid-template-columns: 1fr; }
+  .source-check { margin-block-start: 0; }
 }

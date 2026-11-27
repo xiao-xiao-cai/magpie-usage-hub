@@ -19,7 +19,7 @@
         <h1>用量看板</h1>
       </div>
       <div class="controls">
-        <label for="period">统计范围</label>
+        <label for="period">统计周期</label>
         <select id="period">
           <option value="today">今天</option>
           <option value="7d" selected>近 7 天</option>
@@ -29,49 +29,22 @@
       </div>
     </header>
     <p id="notice" class="notice" role="status">正在读取用量…</p>
-    <div id="results" aria-busy="true" hidden>
-      <section aria-labelledby="summary-heading">
-        <h2 id="summary-heading">用量汇总</h2>
-        <p id="window" class="muted"></p>
-        <div class="table-scroll" role="region" tabindex="0" aria-label="用量汇总表">
-          <table class="summary" aria-label="用量汇总">
-            <thead>
-              <tr><th scope="col">账本与来源</th><th scope="col">计量尝试</th><th scope="col">Token 输入 / 输出</th><th scope="col">缓存读 / 写</th><th scope="col">估算费用 (USD)</th><th scope="col">缺价记录</th></tr>
-            </thead>
-            <tbody id="summary-rows"></tbody>
-          </table>
-        </div>
-        <p class="muted">费用为已计价部分的估算。中心本机的缺价计数沿用原生口径，仅包含输入或输出 Token 非零的缺价记录。</p>
-      </section>
-      <section aria-labelledby="detail-heading">
-        <div class="detail-header">
-          <h2 id="detail-heading">用量明细</h2>
-          <div class="controls">
-            <label for="scope">明细范围</label>
-            <select id="scope">
-              <option value="through">中心本机 · 网关</option>
-              <option value="direct">中心本机 · 直连</option>
-              <option value="reported">所有上报来源</option>
-              <optgroup id="source-options" label="单个上报来源"></optgroup>
-            </select>
-          </div>
-        </div>
-        <p id="detail-notice" class="muted" role="status" hidden></p>
-        <div id="detail-table" class="table-scroll" role="region" tabindex="0" aria-label="用量明细表" hidden>
-          <table class="detail" aria-label="用量明细">
-            <thead>
-              <tr><th scope="col">原调用时间</th><th scope="col">供应商 / 模型</th><th scope="col">状态</th><th scope="col">Token 输入 / 输出</th><th scope="col">缓存读 / 写</th><th scope="col">估算费用 (USD)</th><th scope="col">来源 / RID</th></tr>
-            </thead>
-            <tbody id="detail-rows"></tbody>
-          </table>
-        </div>
-        <nav aria-label="明细分页" class="pagination">
-          <button id="previous" type="button" title="上一页" aria-label="上一页" aria-disabled="true">←</button>
-          <span id="page" aria-live="polite">—</span>
-          <button id="next" type="button" title="下一页" aria-label="下一页" aria-disabled="true">→</button>
-        </nav>
-      </section>
-    </div>
+    <section id="results" aria-labelledby="summary-heading" aria-busy="true" hidden>
+      <h2 id="summary-heading">分来源汇总</h2>
+      <p class="muted">周期按各来源的原生日历统计。</p>
+      <div class="table-scroll" role="region" tabindex="0" aria-label="分来源用量汇总表">
+        <table class="summary">
+          <thead>
+            <tr>
+              <th scope="col">来源</th><th scope="col">统计起点</th><th scope="col">请求数</th>
+              <th scope="col">输入 / 输出 Token</th><th scope="col">缓存读 / 写 Token</th>
+              <th scope="col">已计价估算费用 (USD)</th><th scope="col">缺价记录</th><th scope="col">本次查询</th>
+            </tr>
+          </thead>
+          <tbody id="summary-rows"></tbody>
+        </table>
+      </div>
+    </section>
   </main>
 </body>
 </html>

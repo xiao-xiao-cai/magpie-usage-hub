@@ -2,14 +2,14 @@
 
 2026-11-25 · 以 Windows 和 Magpie `v0.1.4783` 为操作基线
 
-从一个显示今日调用量的页面开始，随后用一个最小后端验证插件宿主。本指南说明怎样选择插件入口、准备环境、安装调试和发布。开发本仓库的发送插件时，先从功能规格定位对应的设计文档。[功能规格与开发参考索引](01-插件定位与功能规格.md) · [官方插件开发文档](https://usemagpie.ai/docs/plugins) · [Magpie v0.1.4783](https://github.com/yetone/magpie/releases/tag/v0.1.4783)
+从一个显示今日调用量的页面开始，随后用一个最小后端验证插件宿主。本指南说明怎样选择插件入口、准备环境、安装调试和发布。开发本仓库的只读拉取时，先查功能规格和当前兼容性基线。[功能规格与开发参考索引](01-插件定位与功能规格.md) · [开发基线](02-开发基线与兼容性.md) · [官方插件开发文档](https://usemagpie.ai/docs/plugins) · [Magpie v0.1.4783](https://github.com/yetone/magpie/releases/tag/v0.1.4783)
 
 ## 1. 先选插件入口
 
 | 要做的功能 | 入口 | 在哪里运行 |
 | --- | --- | --- |
 | 用量看板、配置页、状态页 | `package.json` 中的 `magpie.page` 或 `magpie.panels` | Magpie 界面的沙箱 iframe，用 HTML、CSS、JS 和 `magpie` 页面桥。 |
-| 文件读写、后台轮询、向外部接口发送数据 | OpenCode 风格的宿主入口，优先声明 `exports["./server"]`，也可声明 `main` | Magpie 管理的 Bun 进程。本目录的用量发送插件使用这一入口。 |
+| 文件读写、后台任务、访问网关 API | OpenCode 风格的宿主入口，优先声明 `exports["./server"]`，也可声明 `main` | Magpie 管理的 Bun 进程。本仓库的中心插件使用这一入口。 |
 | 接入模型供应商、API Key 或订阅登录 | 宿主入口返回 `config`、`auth`、`provider` 等 hook | Bun。Magpie 通过它加载账号、列出模型、发出供应商请求和查询配额。 |
 | 路由前需要异步 I/O，例如按请求读取外部上下文 | `magpie.hooks` 或 `*.hooks.ts` 等单文件，导出 `onRequest` | Bun，在路由前执行，受超时和请求变更规则约束。 |
 | 修改网关入参、流式事件或普通响应 | `magpie.middleware` 或 `*.middleware.js` 等单文件 | 网关进程中的 moejs。可用标准 JS，网络、文件系统和定时任务由其他运行时承担。 |
@@ -211,11 +211,11 @@ magpie plugin list --json
 
 [官方 Acme 入门](https://usemagpie.ai/docs/plugins#quick) · [请求与流式处理](https://usemagpie.ai/docs/plugins#requests) · [配额 hook](https://usemagpie.ai/docs/plugins#usage) · [路由与用量观察](https://usemagpie.ai/docs/plugins#gateway-points) · [中间件执行限制](https://github.com/yetone/magpie/blob/v0.1.4783/docs/subsystems/gateway-middleware.md)
 
-### 在用量发送插件里怎样分工
+### 在中心只读插件里怎样分工
 
-把示例入口扩展为发送插件时，由 Bun 管理任务和跨进程锁。源端客户端在回环读游标页，中心客户端逐项解码回执，调度器在整页确认后提交进度。插件页通过 Options 和页面桥配置或查看运行结果。[整体架构与模块职责](03-整体架构与模块职责.md) · [网关接口与用量数据规范](04-网关接口与用量数据规范.md)
+中心 Bun 管理运行锁、来源设置和网关查询。Options 页保存同一实例的回环地址及启用状态。Magpie Web 代理中心看板和管理页，只有后端消费远程 Key 与原生响应。[整体架构与模块职责](03-整体架构与模块职责.md) · [网关接口与用量数据规范](04-网关接口与用量数据规范.md)
 
-改动回执时，用模拟 HTTP 端点与临时目录验证后续子批失败、重放和进程中断。涉及宿主接管时用单个隔离实例，涉及中心原生入账时用源和中心两个实例。[同步流程与故障恢复设计](05-同步流程与故障恢复设计.md) · [开发阶段与验收计划](08-开发阶段与验收计划.md)
+改变请求、字段或来源写入时，用模拟 HTTP 端点和临时目录验证响应、部分失败和下次读回。涉及宿主接管时用单个隔离实例，跨网关查询时核对实际来源和中心。[同步流程与故障恢复设计](05-同步流程与故障恢复设计.md) · [开发阶段与验收计划](08-开发阶段与验收计划.md)
 
 ## 6. 调试、测试与发布
 
@@ -239,5 +239,5 @@ magpie plugin list --json
 | [Magpie 官方文档](https://usemagpie.ai/docs/plugins) | 写插件的主入口，包含完整 Acme provider 示例、页面、工具、Agent 和发布说明。 |
 | [yetone/magpie](https://github.com/yetone/magpie) | 查发布版本、宿主加载行为和网关实际约束。固定版本的 [插件运行时说明](https://github.com/yetone/magpie/blob/v0.1.4783/docs/subsystems/plugin-runtime.md) 适合与官网对照。 |
 | [magpie-community/plugins](https://github.com/magpie-community/plugins) | 社区插件集合。[用量看板](https://github.com/magpie-community/plugins/tree/main/packages/page-usage-board) 可参考页面组织，[参数覆盖](https://github.com/magpie-community/plugins/tree/main/packages/param-override) 可参考中间件入口。 |
-| [Lemonawa/magpie-usage-reporter](https://github.com/Lemonawa/magpie-usage-reporter) | 单向用量上报、重试和配置界面的社区实现。本项目的源客户端按[网关接口与用量数据规范](04-网关接口与用量数据规范.md)使用原生游标。 |
+| [Lemonawa/magpie-usage-reporter](https://github.com/Lemonawa/magpie-usage-reporter) | 单向用量上报、重试和配置界面的社区实现。 |
 | [lucklyduck/magpie-usage-reporter](https://github.com/lucklyduck/magpie-usage-reporter) | 用量报表、订阅、插件后端和 Webhook 示例。 |

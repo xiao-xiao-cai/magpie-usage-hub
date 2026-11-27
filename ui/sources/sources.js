@@ -1,112 +1,116 @@
 const byId = id => document.getElementById(id)
 const sourcesPath = '../api/sources'
 const adminToken = document.querySelector('meta[name="usage-admin-token"]')?.content
-const dateTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'medium' })
-const codePattern = /^[0-9a-f]{64}$/
-const editEnabled = byId('edit-enabled')
-const editInterval = byId('edit-interval')
-const codeInput = byId('pairing-code')
-let sources
-let editing
+const form = byId('source-form')
+const notice = byId('source-notice')
+const testButton = byId('test-source')
+const saveButton = byId('save-source')
+const fields = {
+  name: byId('source-name'), gatewayUrl: byId('source-gateway'), enabled: byId('source-enabled'), key: byId('source-key'),
+}
+const newSource = { name: '', gatewayUrl: '', enabled: true, credentialConfigured: false }
+const failures = new Map([
+  ['unauthorized', '网关未接受此 Key。'], ['forbidden', '网关拒绝访问。请核对允许地址和 Key 权限。'],
+  ['timeout', '连接超时。请核对网关地址和网络。'], ['unavailable', '网关不可达或服务异常。'],
+  ['incompatible_response', '网关响应不兼容。请核对来源的 Magpie 版本。'], ['redirect', '网关返回重定向。请填写最终网关根地址。'],
+  ['restricted_key', '此 Key 的用量范围受限。请检查模型、账户与预算设置。'],
+])
+let snapshot
+let base = newSource
+let baseRevision = 0
 let busy = false
 let stale = false
-let pairing
-let pairingTimer
+let needsReview = false
+let tested
 
-function time(value) {
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? dateTime.format(timestamp) : '暂无'
+function gateway(value) {
+  if (!/^https?:\/\/[^/?#@\\\s]+\/?$/i.test(value)) return ''
+  try { return new URL(value).href } catch { return '' }
 }
 
-function connection(source) {
-  if (!source.paired) return Date.parse(source.pairingExpiresAt) > Date.now() ? '待配对' : '配对码已过期'
-  if (!source.enabled) return '采集已暂停'
-  if (source.lastSeenAt === null) return '等待节点联系'
-  const grace = Math.max(120, source.pollIntervalSec * 2) * 1_000
-  return Date.now() - Date.parse(source.lastSeenAt) <= grace ? '近期在线' : '联系超时'
+function draft() {
+  return { name: fields.name.value.trim(), gatewayUrl: fields.gatewayUrl.value.trim(), enabled: fields.enabled.checked, key: fields.key.value.trim() }
 }
 
-function readSource(value) {
-  if (!value || typeof value.id !== 'string' || typeof value.name !== 'string'
-    || typeof value.sourceCallerKeyId !== 'string' || typeof value.sourceProviderId !== 'string'
-    || !Number.isSafeInteger(value.revision) || value.revision < 1
-    || !Number.isInteger(value.pollIntervalSec) || value.pollIntervalSec < 5 || value.pollIntervalSec > 900
-    || typeof value.enabled !== 'boolean' || typeof value.paired !== 'boolean'
-    || [value.pairingExpiresAt, value.lastSeenAt, value.lastReportAt].some(entry =>
-      entry !== null && (typeof entry !== 'string' || !Number.isFinite(Date.parse(entry))))) throw new Error()
-  return value
+function hasChanges(value = draft()) {
+  return Boolean(value.key) || value.name !== base.name || value.enabled !== base.enabled
+    || (gateway(value.gatewayUrl) || value.gatewayUrl) !== base.gatewayUrl
 }
 
-async function callSource(suffix, body) {
-  if (typeof adminToken !== 'string' || !codePattern.test(adminToken)) throw new Error()
+function selected() {
+  return snapshot?.sources.find(source => source.id === base.id)
+}
+
+function conflict() {
+  return Boolean(snapshot && (baseRevision !== snapshot.revision || needsReview))
+}
+
+function readSnapshot(value) {
+  if (!Number.isSafeInteger(value?.revision) || value.revision < 0 || !Array.isArray(value.sources)) throw new Error()
+  const sources = value.sources.map(source => {
+    const { id, name, gatewayUrl, enabled, credentialConfigured } = source
+    if (typeof id !== 'string' || typeof name !== 'string' || typeof gatewayUrl !== 'string'
+      || typeof enabled !== 'boolean' || typeof credentialConfigured !== 'boolean') throw new Error()
+    return { id, name, gatewayUrl, enabled, credentialConfigured }
+  })
+  return { revision: value.revision, sources }
+}
+
+async function callSource(suffix = '', body) {
+  if (typeof adminToken !== 'string' || !/^[0-9a-f]{64}$/.test(adminToken)) throw new Error()
   const headers = { 'X-Magpie-Usage-Admin': adminToken }
   if (body) headers['Content-Type'] = 'application/json'
   const response = await fetch(`${sourcesPath}${suffix}`, {
     headers, method: body ? 'POST' : 'GET', body: body ? JSON.stringify(body) : undefined,
-    cache: 'no-store', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(10_000),
+    cache: 'no-store', credentials: 'omit', redirect: 'error',
+    signal: AbortSignal.timeout(suffix === '/test' ? 125_000 : 10_000),
   })
-  if (!response.ok) throw new Error('source_request_failed', { cause: response.status })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    throw new Error('source_request_failed', { cause: { status: response.status, code: payload?.error?.code } })
+  }
   return response.json()
 }
 
-function selected() {
-  return sources?.find(source => source.id === editing?.id)
-}
-
-function edited() {
-  return editing && (editEnabled.checked !== editing.enabled || editInterval.valueAsNumber !== editing.pollIntervalSec)
-}
-
-function updateControls() {
+function controls() {
+  const value = draft()
+  const changed = hasChanges(value)
+  const keyNeeded = !base.credentialConfigured || gateway(value.gatewayUrl) !== base.gatewayUrl
+  const connectionChanged = keyNeeded || Boolean(value.key)
+  const blocked = busy || stale || !snapshot || conflict()
   const latest = selected()
-  const conflict = latest && latest.revision !== editing.revision
   byId('refresh-sources').disabled = busy
-  byId('add-fields').disabled = busy || sources === undefined
-  byId('add-button').disabled = stale
-  byId('edit-fields').disabled = busy || !latest
-  byId('save-source').disabled = stale || Boolean(conflict)
-  byId('renew-code').disabled = stale || Boolean(conflict)
-  byId('renew-code').hidden = !latest || latest.paired
-  byId('review-latest').hidden = !conflict
-  byId('edit-conflict').hidden = !conflict
-  byId('edit-conflict').textContent = conflict
-    ? `中心设置已更新，当前已${latest.enabled ? '启用' : '暂停'}采集，间隔 ${latest.pollIntervalSec} 秒。草稿已保留。` : ''
+  byId('source-fields').disabled = busy || !snapshot
   byId('sources-section').setAttribute('aria-busy', String(busy))
+  form.setAttribute('aria-busy', String(busy))
+  fields.key.required = keyNeeded
+  byId('source-key-hint').textContent = keyNeeded ? '填写此地址的只读 Key，并测试连接后保存。'
+    : value.key ? '测试连接后即可保存替换的 Key。' : '已配置。留空沿用，输入新 Key 可轮换。'
+  testButton.disabled = blocked
+  const passed = tested?.gatewayUrl === gateway(value.gatewayUrl) && tested.key === value.key
+  saveButton.disabled = blocked || !changed || (connectionChanged && !passed)
+  const reset = byId('reset-source')
+  reset.hidden = !base.id && !changed
+  reset.textContent = base.id ? '返回添加来源' : '清空草稿'
+  byId('revision-review').hidden = stale || !conflict()
+  byId('review-latest').disabled = busy || Boolean(base.id && !latest)
+  byId('latest-source').textContent = latest
+    ? `当前已保存为「${latest.name}」，地址 ${latest.gatewayUrl}，查询${latest.enabled ? '已启用' : '已停用'}。`
+    : base.id ? '当前来源已不存在。可返回添加来源。' : '来源列表已更新，请核对后继续。'
 }
 
-function editSource(source) {
-  editing = source
-  byId('editor').hidden = !source
-  byId('edit-notice').textContent = ''
-  if (source) {
-    byId('edit-title').textContent = `来源设置 · ${source.name}`
-    byId('edit-scope').textContent = `专用测试 Key ID ${source.sourceCallerKeyId} · 供应商 ${source.sourceProviderId}`
-    editEnabled.checked = source.enabled
-    editInterval.value = String(source.pollIntervalSec)
-  }
-  updateControls()
-}
-
-function clearPairing() {
-  clearTimeout(pairingTimer)
-  pairing = undefined
-  codeInput.value = ''
-  byId('pairing-summary').textContent = ''
-  byId('pairing-result').hidden = true
-  byId('pairing-value').hidden = true
-  byId('reveal-code').textContent = '显示配对码'
-  byId('reveal-code').setAttribute('aria-expanded', 'false')
-}
-
-function offerPairing(source, code) {
-  clearPairing()
-  const remaining = Date.parse(source.pairingExpiresAt) - Date.now()
-  if (remaining <= 0) return
-  pairing = { id: source.id, expiresAt: source.pairingExpiresAt, code }
-  pairingTimer = setTimeout(clearPairing, remaining)
-  byId('pairing-summary').textContent = `${source.name} · 有效期至 ${time(source.pairingExpiresAt)}`
-  byId('pairing-result').hidden = false
-  byId('reveal-code').focus()
+function showEditor(source = newSource) {
+  base = source
+  baseRevision = snapshot.revision
+  tested = undefined
+  needsReview = false
+  byId('source-title').textContent = source.id ? `编辑来源 · ${source.name}` : '添加来源'
+  fields.name.value = source.name
+  fields.gatewayUrl.value = source.gatewayUrl
+  fields.enabled.checked = source.enabled
+  fields.key.value = ''
+  notice.textContent = ''
+  controls()
 }
 
 function rowFor(source) {
@@ -114,12 +118,8 @@ function rowFor(source) {
   const title = document.createElement('th')
   title.scope = 'row'
   title.textContent = source.name
-  const id = document.createElement('div')
-  id.className = 'identifier muted'
-  id.textContent = source.id
-  title.append(id)
   row.append(title)
-  for (const value of [connection(source), time(source.lastSeenAt), time(source.lastReportAt)]) {
+  for (const value of [source.gatewayUrl, source.enabled ? '已启用' : '已停用', source.credentialConfigured ? '已配置' : '待配置']) {
     const cell = document.createElement('td')
     cell.textContent = value
     row.append(cell)
@@ -127,17 +127,18 @@ function rowFor(source) {
   const actions = document.createElement('td')
   const button = document.createElement('button')
   button.type = 'button'
-  button.textContent = '设置'
-  button.setAttribute('aria-label', `设置 ${source.name}`)
+  button.textContent = '编辑'
+  button.setAttribute('aria-label', `编辑 ${source.name}`)
   button.addEventListener('click', () => {
     if (busy) return
-    if (edited() && editing.id !== source.id) {
-      byId('edit-notice').textContent = '请保存当前草稿，或关闭当前设置后再切换来源。'
-      editInterval.focus()
-      return
+    if (source.id !== base.id) {
+      if (hasChanges()) {
+        notice.textContent = '请保存当前草稿，或清空后再切换来源。'
+        return
+      }
+      showEditor(source)
     }
-    if (editing?.id !== source.id) editSource(source)
-    editInterval.focus()
+    fields.name.focus()
   })
   actions.append(button)
   row.append(actions)
@@ -145,134 +146,154 @@ function rowFor(source) {
 }
 
 function present(next) {
-  sources = next
-  const latest = selected()
-  if (!latest || !edited()) editSource(latest)
-  if (pairing && !sources.some(source => source.id === pairing.id && source.pairingExpiresAt === pairing.expiresAt
-    && !source.paired)) clearPairing()
-  byId('sources-rows').replaceChildren(...sources.map(rowFor))
-  byId('sources-table').hidden = !sources.length
-  byId('sources-empty').hidden = sources.length > 0
-  updateControls()
+  const edited = snapshot && (hasChanges() || needsReview)
+  snapshot = next
+  if (!edited) showEditor(selected())
+  byId('sources-rows').replaceChildren(...next.sources.map(rowFor))
+  byId('sources-table').hidden = !next.sources.length
+  byId('sources-empty').hidden = next.sources.length > 0
+  controls()
 }
 
 async function loadSources() {
-  const payload = await callSource('')
-  if (!Array.isArray(payload?.sources)) throw new Error()
-  const next = payload.sources.map(readSource)
+  const next = readSnapshot(await callSource())
   stale = false
   present(next)
-  byId('sources-notice').textContent = `最近读取 ${time(new Date().toISOString())}`
+  byId('sources-notice').textContent = ''
 }
 
 async function refresh() {
   if (busy) return
   busy = true
-  updateControls()
+  controls()
   byId('sources-notice').textContent = '正在读取来源…'
   try {
     await loadSources()
-  } catch {
-    byId('sources-notice').textContent = sources
-      ? '刷新失败，显示上次读取的来源。可重试。' : '暂时无法读取来源。请刷新，或从 Magpie Web 重新打开此页。'
+  } catch (error) {
+    byId('sources-notice').textContent = error?.cause?.status === 403
+      ? '管理会话已失效。请从用量看板重新打开来源管理。'
+      : snapshot ? '刷新失败。当前显示上次读取的来源，可重试。' : '暂时无法读取来源。请刷新重试。'
   } finally {
     busy = false
-    updateControls()
+    controls()
   }
 }
 
-async function submit(suffix, body, notice, success, needsCode = false) {
-  if (busy || stale || sources === undefined) return
+function readDraft() {
+  if (!form.reportValidity()) return
+  const value = draft()
+  const gatewayUrl = gateway(value.gatewayUrl)
+  if (!value.name || !gatewayUrl) {
+    notice.textContent = value.name ? '请输入有效的 HTTP(S) 网关根地址。' : '请输入来源名称。'
+    fields[value.name ? 'gatewayUrl' : 'name'].focus()
+    return
+  }
+  if ((!base.credentialConfigured || base.gatewayUrl !== gatewayUrl) && !value.key) {
+    notice.textContent = '请输入此网关的专用只读 Key。'
+    fields.key.focus()
+    return
+  }
+  return { ...(base.id ? { id: base.id } : {}), revision: baseRevision, name: value.name, gatewayUrl, enabled: value.enabled,
+    ...(value.key ? { key: value.key } : {}),
+  }
+}
+
+async function submit(isTest) {
+  if (busy || (isTest ? testButton.disabled : saveButton.disabled)) return
+  const body = readDraft()
+  if (!body) return
+  if (!isTest && (body.key || !base.credentialConfigured || body.gatewayUrl !== base.gatewayUrl)
+    && (body.gatewayUrl !== tested?.gatewayUrl || (body.key ?? '') !== tested.key)) {
+    notice.textContent = '请先测试当前地址与 Key。'
+    controls()
+    return
+  }
+  if (isTest) tested = undefined
   busy = true
-  updateControls()
-  notice.textContent = '正在保存…'
+  controls()
+  notice.textContent = isTest ? '正在测试连接…' : '正在保存来源…'
   try {
-    const payload = await callSource(suffix, body)
-    const source = readSource(payload?.source)
-    if ((body.id !== undefined && source.id !== body.id)
-      || (needsCode && (typeof payload.pairingCode !== 'string' || !codePattern.test(payload.pairingCode)
-        || source.pairingExpiresAt === null || source.paired))) throw new Error()
-    present([...sources.filter(entry => entry.id !== source.id), source].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN')))
-    success(source)
-    if (needsCode) offerPairing(source, payload.pairingCode)
-    notice.textContent = needsCode ? '配对码已生成。' : '来源设置已保存。'
+    if (isTest) {
+      const result = await callSource('/test', body)
+      if (result?.status === 'ok') tested = { gatewayUrl: body.gatewayUrl, key: body.key ?? '' }
+      notice.textContent = tested ? '连接成功。' : `测试未通过。${failures.get(result?.failure?.code) ?? '请核对网关地址和 Key。'}`
+    } else {
+      const next = readSnapshot(await callSource('', body))
+      if (next.revision <= baseRevision) throw new Error()
+      present(next)
+      showEditor(body.id ? selected() : undefined)
+      notice.textContent = '来源已保存。'
+    }
   } catch (error) {
-    const status = error?.cause
+    const status = error?.cause?.status
+    const code = error?.cause?.code
     if (status === 409 || status === 404) {
       stale = true
+      needsReview = true
       try { await loadSources() } catch {}
-      notice.textContent = stale ? '中心状态已变化，请刷新核对后再提交。草稿已保留。'
-        : '已读取中心的新状态。请核对后再提交，草稿已保留。'
+      notice.textContent = stale ? '来源配置已变化。请刷新后核对，草稿已保留。'
+        : '来源配置已变化。请核对最新修订，草稿已保留。'
+    } else if (status === 403) {
+      notice.textContent = '管理会话已失效。请从用量看板重新打开来源管理。'
+    } else if (status === 400) {
+      notice.textContent = code === 'key_required' ? '请重新输入此网关的专用只读 Key。'
+        : '请核对来源名称、网关地址及 Key。草稿已保留。'
+    } else if (isTest || code === 'source_save_failed') {
+      notice.textContent = isTest ? '测试暂时无法完成，请重试。' : '保存失败。草稿已保留，可重试。'
     } else {
-      stale = status !== 400
-      notice.textContent = status === 400 ? '请核对来源设置后再提交。草稿已保留。'
-        : '本次保存结果待确认。请刷新核对后再提交，草稿已保留。'
+      stale = true
+      needsReview = true
+      notice.textContent = '保存结果待确认。请刷新列表并核对，草稿已保留。'
     }
   } finally {
     busy = false
-    updateControls()
+    controls()
   }
 }
 
-function bindSubmit(formId, buttonId, handler) {
-  const form = byId(formId)
-  const button = byId(buttonId)
-  const submitForm = event => {
-    event.preventDefault()
-    if (!button.disabled && form.reportValidity()) form.dispatchEvent(new Event('submit', { cancelable: true }))
-  }
-  button.addEventListener('click', submitForm)
-  form.addEventListener('keydown', event => {
-    if (event.key === 'Enter' && !event.isComposing && event.target.tagName === 'INPUT'
-      && event.target.type !== 'checkbox') submitForm(event)
-  })
-  form.addEventListener('submit', handler)
+function dispatchSubmit(event) {
+  event.preventDefault()
+  if (!saveButton.disabled) form.dispatchEvent(new Event('submit', { cancelable: true }))
 }
 
 byId('refresh-sources').addEventListener('click', refresh)
-bindSubmit('add-source', 'add-button', event => {
-  event.preventDefault()
-  const body = {
-    name: byId('source-name').value.trim(), sourceCallerKeyId: byId('source-key').value.trim(),
-    sourceProviderId: byId('source-provider').value.trim(), pollIntervalSec: byId('source-interval').valueAsNumber,
-    enabled: byId('source-enabled').checked,
-  }
-  void submit('', body, byId('add-notice'), () => byId('add-source').reset(), true)
+testButton.addEventListener('click', () => void submit(true))
+saveButton.addEventListener('click', dispatchSubmit)
+form.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.isComposing && event.target.tagName === 'INPUT'
+    && event.target.type !== 'checkbox') dispatchSubmit(event)
 })
-bindSubmit('edit-source', 'save-source', event => {
+form.addEventListener('submit', event => {
   event.preventDefault()
-  if (!editing || byId('save-source').disabled) return
-  void submit('/settings', { id: editing.id, revision: editing.revision, enabled: editEnabled.checked,
-    pollIntervalSec: editInterval.valueAsNumber,
-  }, byId('edit-notice'), editSource)
+  void submit(false)
 })
-byId('renew-code').addEventListener('click', () => {
-  if (!editing || byId('renew-code').disabled || selected()?.paired) return
-  const { id, revision } = editing
-  void submit('/pairing', { id, revision }, byId('edit-notice'), source => { editing = source }, true)
+for (const field of Object.values(fields)) {
+  field.addEventListener('input', () => {
+    if (field === fields.gatewayUrl || field === fields.key) {
+      tested = undefined
+      if (!conflict() && !stale) notice.textContent = ''
+    }
+    controls()
+  })
+}
+byId('reset-source').addEventListener('click', () => {
+  if (busy || !snapshot) return
+  showEditor()
+  fields.name.focus()
 })
 byId('review-latest').addEventListener('click', () => {
-  const latest = selected()
-  if (busy || !latest || !editing) return
-  const draftEnabled = editEnabled.checked === editing.enabled ? latest.enabled : editEnabled.checked
-  const draftInterval = editInterval.valueAsNumber === editing.pollIntervalSec ? String(latest.pollIntervalSec) : editInterval.value
-  editSource(latest)
-  editEnabled.checked = draftEnabled
-  editInterval.value = draftInterval
-  editInterval.focus()
-})
-byId('close-editor').addEventListener('click', () => editSource())
-byId('dismiss-code').addEventListener('click', clearPairing)
-byId('reveal-code').addEventListener('click', () => {
-  if (!pairing) return
-  const reveal = byId('pairing-value').hidden
-  codeInput.value = reveal ? pairing.code : ''
-  byId('pairing-value').hidden = !reveal
-  byId('reveal-code').textContent = reveal ? '隐藏配对码' : '显示配对码'
-  byId('reveal-code').setAttribute('aria-expanded', String(reveal))
-  if (reveal) {
-    codeInput.focus()
-    codeInput.select()
-  }
+  if (busy || stale || !conflict() || byId('review-latest').disabled) return
+  const value = draft()
+  const keepName = value.name !== base.name
+  const keepGateway = Boolean(value.key) || (gateway(value.gatewayUrl) || value.gatewayUrl) !== base.gatewayUrl
+  const keepEnabled = value.enabled !== base.enabled
+  showEditor(selected())
+  if (keepName) fields.name.value = value.name
+  if (keepGateway) fields.gatewayUrl.value = value.gatewayUrl
+  if (keepEnabled) fields.enabled.checked = value.enabled
+  fields.key.value = value.key
+  notice.textContent = '已载入最新修订。请核对草稿。'
+  controls()
+  fields.name.focus()
 })
 void refresh()

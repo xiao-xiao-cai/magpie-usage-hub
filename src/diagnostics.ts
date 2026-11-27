@@ -1,10 +1,9 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import type { SyncState } from './state/store.ts'
 
 export const diagnosticPort = 3493
 
 type DiagnosticFailure = {
-  stage: 'source' | 'center' | 'state' | 'mapping' | 'options' | 'run'
+  stage: 'center' | 'state' | 'options'
   code: string
   httpStatus?: number
 }
@@ -13,42 +12,25 @@ type DiagnosticStatus = {
   schema: 'magpie-usage-hub/status-v1'
   loadedRevision: string | null
   appliedRevision: string | null
-  phase: 'starting' | 'disabled' | 'waiting_lock' | 'pairing' | 'paused' | 'syncing' | 'recovering' | 'idle' | 'retrying' | 'blocked' | 'receiving'
+  phase: 'starting' | 'disabled' | 'migration_required' | 'waiting_lock' | 'ready' | 'retrying' | 'blocked'
   ready: boolean
-  credentialConfigured: boolean
   lastAttemptAt: string | null
-  lastConfirmedAt: string | null
-  lastPage: { kind: 'sync' | 'recovery'; accepted: number; skipped: number; hasMore: boolean } | null
   retryAt: string | null
   failure: DiagnosticFailure | null
-  recovery: {
-    status: 'running' | 'complete' | 'failed' | 'rejected'
-    kind: 'range' | 'cursor'
-    from: string
-    to: string | null
-    pages: number
-    accepted: number
-    skipped: number
-    failure: string | null
-  } | null
 }
 
 type DiagnosticUpdate = Partial<Omit<DiagnosticStatus, 'schema' | 'loadedRevision'>>
 
-export function createDiagnostics(loadedRevision: string | null, credentialConfigured: boolean) {
+export function createDiagnostics(loadedRevision: string | null) {
   let status: DiagnosticStatus = {
     schema: 'magpie-usage-hub/status-v1',
     loadedRevision,
-    credentialConfigured,
     appliedRevision: null,
     phase: 'starting',
     ready: false,
     lastAttemptAt: null,
-    lastConfirmedAt: null,
-    lastPage: null,
     retryAt: null,
     failure: null,
-    recovery: null,
   }
   return {
     getStatus: () => status,
@@ -59,33 +41,6 @@ export function createDiagnostics(loadedRevision: string | null, credentialConfi
 }
 
 export type Diagnostics = ReturnType<typeof createDiagnostics>
-
-export function updateDiagnosticProgress(diagnostics: Diagnostics, state: SyncState, requestId?: string): void {
-  const history = state.recovery?.results ?? []
-  const active = state.recovery?.active
-  const selected = active ?? history.find(result => result.request.id === requestId) ?? history.at(-1)
-  const lastRecovery = history.findLast(result => 'lastConfirmedAt' in result && result.lastConfirmedAt !== null)
-  const lastRecoveryAt = lastRecovery && 'lastConfirmedAt' in lastRecovery ? lastRecovery.lastConfirmedAt : null
-  const confirmedAt = [state.lastConfirmedAt, active?.lastConfirmedAt, lastRecoveryAt]
-    .filter((timestamp): timestamp is string => typeof timestamp === 'string')
-    .sort()
-    .at(-1) ?? null
-  const progress = selected && 'pages' in selected ? selected : null
-  diagnostics.update({
-    ready: state.cursor !== null,
-    lastConfirmedAt: confirmedAt,
-    recovery: selected ? {
-      status: 'status' in selected ? selected.status : 'running',
-      kind: selected.request.kind,
-      from: selected.request.from,
-      to: selected.request.kind === 'range' ? selected.request.to : null,
-      pages: progress?.pages ?? 0,
-      accepted: progress?.accepted ?? 0,
-      skipped: progress?.skipped ?? 0,
-      failure: 'reason' in selected ? selected.reason : null,
-    } : null,
-  })
-}
 
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -101,9 +56,9 @@ const managementAssets = new Map([
   ['/sources/sources.js', ['sources/sources.js', 'text/javascript; charset=utf-8']],
   ['/sources/sources.css', ['sources/sources.css', 'text/css; charset=utf-8']],
 ])
-const managementPaths = new Set(['/api/sources', '/api/sources/settings', '/api/sources/pairing'])
+const managementPaths = new Set(['/api/sources', '/api/sources/test'])
 const adminHeader = 'X-Magpie-Usage-Admin'
-type DashboardQuery = (url: URL) => Promise<Response>
+type DashboardQuery = (url: URL, signal: AbortSignal) => Promise<Response>
 type ManageSources = (request: Request) => Response | Promise<Response>
 
 export function serveDiagnostics(
@@ -165,7 +120,7 @@ export function serveDiagnostics(
       if (path === '/api/status') return Response.json(diagnostics.getStatus(), { headers })
       if (dashboard && path === '/api/usage') {
         try {
-          const result = await dashboard(url)
+          const result = await dashboard(url, request.signal)
           headers.set('Content-Type', 'application/json; charset=utf-8')
           return new Response(result.body, { status: result.status, headers })
         } catch {
