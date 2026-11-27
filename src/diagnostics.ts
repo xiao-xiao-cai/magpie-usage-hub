@@ -17,6 +17,10 @@ type DiagnosticStatus = {
   role: 'center' | null
   syncPhase: SyncPhase | null
   ready: boolean
+  receiver: 'off' | 'listening' | 'failed'
+  collectorPhase: 'starting' | 'ready' | 'retrying' | 'blocked' | null
+  collectorFailure: DiagnosticFailure | null
+  collectorRetryAt: string | null
   hasMore: boolean
   lastPageAt: string | null
   lastSyncedAt: string | null
@@ -36,6 +40,10 @@ export function createDiagnostics(loadedRevision: string | null, role: Diagnosti
     role,
     syncPhase: null,
     ready: false,
+    receiver: 'off',
+    collectorPhase: null,
+    collectorFailure: null,
+    collectorRetryAt: null,
     hasMore: false,
     lastPageAt: null,
     lastSyncedAt: null,
@@ -54,15 +62,20 @@ export function createDiagnostics(loadedRevision: string | null, role: Diagnosti
 export type Diagnostics = ReturnType<typeof createDiagnostics>
 
 const assets = new Map([
-  ['/', ['index.html', 'text/html; charset=utf-8']],
-  ['/status.js', ['status.js', 'text/javascript; charset=utf-8']],
-  ['/status.css', ['status.css', 'text/css; charset=utf-8']],
+  ['/entry.js', ['entry.js', 'text/javascript; charset=utf-8']],
+  ['/options.js', ['../page/options.js', 'text/javascript; charset=utf-8']],
+  ['/shared.css', ['shared.css', 'text/css; charset=utf-8']],
+  ['/host.js', ['host.js', 'text/javascript; charset=utf-8']],
+  ['/status/', ['index.html', 'text/html; charset=utf-8']],
+  ['/status/status.js', ['status.js', 'text/javascript; charset=utf-8']],
+  ['/status/status.css', ['status.css', 'text/css; charset=utf-8']],
 ])
 const dashboardAssets = new Map([
   ['/dashboard/dashboard.js', ['dashboard/dashboard.js', 'text/javascript; charset=utf-8']],
   ['/dashboard/dashboard.css', ['dashboard/dashboard.css', 'text/css; charset=utf-8']],
 ])
 const managementAssets = new Map([
+  ['/sources/onboarding.js', ['sources/onboarding.js', 'text/javascript; charset=utf-8']],
   ['/sources/sources.js', ['sources/sources.js', 'text/javascript; charset=utf-8']],
   ['/sources/sources.css', ['sources/sources.css', 'text/css; charset=utf-8']],
 ])
@@ -130,6 +143,12 @@ export function serveDiagnostics(
       if (request.method !== 'GET') {
         headers.set('Allow', 'GET')
         return new Response(null, { status: 405, headers })
+      }
+
+      if (path === '/') {
+        headers.set('Content-Type', 'text/html; charset=utf-8')
+        const template = await Bun.file(new URL('../ui/entry.html', import.meta.url)).text()
+        return new Response(template.replace('__CENTER_AVAILABLE__', dashboard ? 'yes' : 'no'), { headers })
       }
 
       if ((manage && path === '/sources/') || (dashboard && path === '/dashboard/')) {

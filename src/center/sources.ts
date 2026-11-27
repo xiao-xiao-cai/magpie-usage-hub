@@ -15,10 +15,11 @@ function readEdit(value: unknown): SourceEdit | null {
   if (!revision) return null
   const { action, enabled } = value
   if (action === 'create') {
+    const id = value.id === undefined ? undefined : readRevision(value.id)
     const name = readName(value.name)
     const digest = readDigest(value.digest)
-    if (!name || !digest || (enabled !== undefined && typeof enabled !== 'boolean')) return null
-    return { revision, action, name, digest, enabled: enabled ?? true }
+    if (id === null || !name || !digest || (enabled !== undefined && typeof enabled !== 'boolean')) return null
+    return { revision, action, id, name, digest, enabled: enabled ?? true }
   }
 
   const id = readSourceId(value.id)

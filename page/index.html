@@ -3,68 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Magpie Usage Hub</title>
+  <title>用量概览 · Magpie Usage Hub</title>
   <link rel="stylesheet" href="configuration.css">
   <script defer src="_magpie/bridge.js"></script>
-  <script defer src="options.js"></script>
-  <script defer src="configuration.js"></script>
+  <script defer src="entry.js"></script>
 </head>
-<body>
-  <main class="layout">
-    <header class="page-header">
-      <div>
-        <h1>Magpie Usage Hub</h1>
-        <p class="muted" id="diagnostic-guide">在 Magpie Web 的插件页打开后台诊断。</p>
-      </div>
-      <a id="diagnostic-link" class="action-link" hidden>打开后台诊断</a>
-    </header>
-
-    <section class="panel" aria-labelledby="settings-title">
-      <header class="section-header">
-        <h2 id="settings-title">中心设置</h2>
-        <button id="reload-options" type="button">重新读取</button>
-      </header>
-      <p id="migration-guide" class="feedback" hidden>请核对中心设置，启用 OTLP 接收与看板并保存。</p>
-      <form id="settings-form" novalidate>
-        <fieldset id="settings-fields" disabled aria-labelledby="settings-title">
-          <label class="check-row" for="enabled">
-            <input id="enabled" type="checkbox">
-            启用 OTLP 接收与看板
-          </label>
-          <div class="fields">
-            <div class="field">
-              <label for="centerGatewayUrl">中心本机网关</label>
-              <input id="centerGatewayUrl" type="url" placeholder="http://127.0.0.1:3425" autocomplete="off" spellcheck="false" aria-describedby="gateway-hint">
-              <small id="gateway-hint">填写中心宿主内的回环网关根地址。</small>
-            </div>
-            <div class="field">
-              <label for="requestTimeoutSec">本机网关请求超时（秒）</label>
-              <input id="requestTimeoutSec" type="number" min="1" max="120" step="1" value="30" required>
-            </div>
-            <div class="field">
-              <label for="ingestHost">OTLP 监听地址</label>
-              <input id="ingestHost" type="text" placeholder="127.0.0.1" autocomplete="off" spellcheck="false" aria-describedby="ingest-hint">
-              <small id="ingest-hint">默认监听回环。Docker 发布的接收端口应绑定宿主的 WireGuard 地址。</small>
-            </div>
-            <div class="field">
-              <label for="ingestPort">OTLP 接收端口</label>
-              <input id="ingestPort" type="number" min="1" max="65535" step="1" value="3494">
-            </div>
-            <div class="field">
-              <label for="timeZone">看板时区</label>
-              <input id="timeZone" type="text" placeholder="Asia/Shanghai" autocomplete="off" spellcheck="false">
-            </div>
-          </div>
-          <div class="actions">
-            <button type="submit" class="primary" id="save-settings">保存设置</button>
-            <button id="rebase-options" type="button" hidden>载入最新设置并保留草稿</button>
-          </div>
-        </fieldset>
-      </form>
-      <p id="settings-message" class="feedback" role="status">正在读取设置…</p>
-      <ul id="options-difference" class="difference" hidden></ul>
-      <p id="settings-revision" class="revision" hidden>保存修订 <code id="revision-value"></code></p>
-    </section>
-  </main>
-</body>
+<body><main class="loading-shell" aria-label="用量概览">
+  <p id="loading-message" role="status">正在读取用量…</p>
+  <div id="loading-preview" aria-hidden="true">
+    <div class="loading-stats"><i></i><i></i><i></i><i></i></div>
+    <div class="loading-trend"></div>
+  </div>
+  <a href="settings.html" id="settings-link" hidden>中心设置</a>
+</main></body>
 </html>

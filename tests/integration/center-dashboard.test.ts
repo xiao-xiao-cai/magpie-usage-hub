@@ -81,6 +81,48 @@ test('queries local accounting and received OTLP span usage by transport and pro
   }
 })
 
+test('conversation combines local direct and remote session observations in every selection', async () => {
+  const ledger = openCenterLedger(':memory:')
+  try {
+    const windows = register(ledger)
+    commit(ledger, 'local', [row(1, windowInside, { model: 'gateway' }),
+      row(2, windowInside, { via: 'direct', input: 100, output: 30, cacheRead: 40, cacheWrite: 10, reasoning: 8, cost: 0.25 }),
+      row(3, windowInside, { via: 'direct', cost: 0 }), row(4, windowInside, { via: 'direct', cost: null })])
+    ledger.commitOtlp(reportDigest, [otlpRow(1, 'through', { model: 'gateway' }),
+      otlpRow(2, 'session'), otlpRow(3, 'session', { model: 'comparison' })])
+    const dashboard = createDashboard(ledger, 'America/New_York')
+    const selection = { ...window, via: 'conversation' }
+    const summary = await (await request(dashboard, 'usage', { ...selection, bucket: 'hour' })).json()
+    const center = { calls: 3, input: 120, output: 34, cacheRead: 46, cacheWrite: 18, reasoning: 10, cost: 0.25, unpriced: 1 }
+    const remote = { calls: 2, input: 20, cost: 0.25, unpriced: 0 }
+    expect(summary.sources).toMatchObject([{ id: 'local', totals: center, models: [{ model: 'sample', totals: center }] },
+      { id: windows, totals: remote, models: [{ model: 'comparison' }, { model: 'sample' }] }])
+    expect(summary.sources[0].buckets[1].totals).toMatchObject(center)
+    expect(summary.sources[1].buckets[1].totals).toMatchObject(remote)
+    const scoped = await (await request(dashboard, 'usage', { ...selection, model: 'sample', bucket: 'hour' })).json()
+    const sample = { calls: 1, input: 10, cost: 0.125, unpriced: 0 }
+    expect(scoped.sources[1]).toMatchObject({ id: windows, totals: sample, models: [{ model: 'sample', totals: sample }] })
+    expect(scoped.sources[1].buckets[1].totals).toMatchObject(sample)
+    const sourceRows = await (await request(dashboard, 'usage/rows', { ...selection, sourceId: windows, model: 'sample' })).json()
+    expect(sourceRows.rows).toMatchObject([{ via: 'session', model: 'sample', input: 10, cost: 0.125 }])
+    const readPage = async (extra: Record<string, string> = {}) =>
+      (await request(dashboard, 'usage/rows', { ...selection, limit: '2', ...extra })).json()
+    const first = await readPage()
+    for (const via of ['through', 'direct', 'session']) {
+      expect(await readPage({ page: first.nextPage, via })).toEqual({ error: { code: 'invalid_page' } })
+    }
+    const second = await readPage({ page: first.nextPage })
+    const third = await readPage({ page: second.nextPage })
+    expect(third.nextPage).toBe(null)
+    const records = [...first.rows, ...second.rows, ...third.rows]
+    expect(records.map(record => record.via)).toEqual(['direct', 'direct', 'direct', 'session', 'session'])
+    expect(records.slice(0, 3)).toMatchObject([{ cost: null }, { cost: 0 },
+      { input: 100, output: 30, cacheRead: 40, cacheWrite: 10, reasoning: 8, cost: 0.25 }])
+  } finally {
+    ledger.db.close()
+  }
+})
+
 test('includes cache-only OTLP fees and missing prices in each aggregate', async () => {
   const ledger = openCenterLedger(':memory:')
   try {

@@ -14,6 +14,8 @@ type ViewState = {
 type PageOptions = {
   revision(value: unknown): string
   createId(): string
+  dashboardSearch(raw: unknown): string
+  receiverFragment(raw: unknown): string
   pageServiceLink(service: unknown, current: string, saved?: Options): string
   settingsView(saved: Options): Options
   settingsPatch(draft: Options): Options
@@ -67,13 +69,18 @@ function harness(initial: Options = original) {
 }
 
 describe('plugin Options page', () => {
-  test('defaults to a disabled center and validates its gateway, listener and time zone', () => {
-    const defaults = { ...settings, enabled: false, ingestPort: '3494', requestTimeoutSec: '30' }
+  test('defaults to local collection and validates its gateway, listener and sender endpoint', () => {
+    const defaults = { ...settings, centerGatewayUrl: '', receiverEnabled: false, publicEndpoint: '', ingestPort: '3494', requestTimeoutSec: '30' }
     expect(page.settingsView({})).toEqual(defaults)
-    expect(page.settingsView({ collectionMode: 'pull', role: 'center', enabled: true })).toEqual(defaults)
-    expect(page.settingsView(original)).toEqual({ ...defaults, enabled: true })
+    expect(page.settingsView({ collectionMode: 'pull', role: 'center', enabled: true })).toMatchObject({ enabled: false, receiverEnabled: false })
+    expect(page.settingsView(original)).toEqual({ ...defaults, centerGatewayUrl: settings.centerGatewayUrl, receiverEnabled: true })
     const draft = { ...settings, centerGatewayUrl: 'http://[::1]:3425', ingestHost: '::', requestTimeoutSec: 60 }
-    expect(page.settingsPatch(draft)).toEqual({ ...draft, collectionMode: 'otlp', role: 'center', centerGatewayUrl: 'http://[::1]:3425/' })
+    expect(page.settingsPatch(draft)).toEqual({ ...draft, collectionMode: 'otlp', role: 'center', centerGatewayUrl: 'http://[::1]:3425/', receiverEnabled: false, publicEndpoint: '' })
+    expect(page.settingsPatch({ ...draft, centerGatewayUrl: '' }).centerGatewayUrl).toBeUndefined()
+    for (const publicEndpoint of ['file://fixture', 'http://[::1]', 'http://127.1', 'http://0.0.0.0', 'http://user@fixture/', 'https://example.org/?x=1']) {
+      expect(() => page.settingsPatch({ ...draft, publicEndpoint })).toThrow(/基础地址/)
+    }
+    expect(page.settingsPatch({ ...draft, publicEndpoint: 'https://collector.example.org/otlp/' }).publicEndpoint).toBe('https://collector.example.org/otlp')
     for (const url of ['https://other.example/', 'http://127.0.0.1/?', 'http://127.0.0.1/#',
       'http://127.0.0.1/anything/..', 'http://@127.0.0.1', 'ftp://127.0.0.1/']) {
       expect(() => page.settingsPatch({ ...draft, centerGatewayUrl: url })).toThrow(/回环网关根地址/)
@@ -91,7 +98,7 @@ describe('plugin Options page', () => {
       ingestHost: '0.0.0.0', ingestPort: 4318, timeZone: 'UTC', requestTimeoutSec: 10,
     }
     const view = page.settingsView(legacyCenter)
-    expect(view).toEqual({ ...settings, centerGatewayUrl: legacyCenter.centerGatewayUrl,
+    expect(view).toEqual({ ...settings, receiverEnabled: true, publicEndpoint: '', centerGatewayUrl: legacyCenter.centerGatewayUrl,
       ingestHost: '0.0.0.0', ingestPort: '4318', timeZone: 'UTC', requestTimeoutSec: '10',
     })
     const patch = page.settingsPatch({ ...view, ingestPort: 4318, requestTimeoutSec: 10 })
@@ -114,6 +121,33 @@ describe('plugin Options page', () => {
     expect(page.settingsView(legacySender)).toEqual(page.settingsView({ ...original, enabled: false }))
     expect(page.pageServiceLink('', pageUrl, original)).toBe('')
     expect(page.pageServiceLink(service, 'https://elsewhere.example/', original)).toBe('')
+    expect(page.pageServiceLink(`${service}?unknown=value#untrusted`, pageUrl, original)).toBe(`${service}#revision=${revisionOne}&view=dashboard`)
+    expect(page.pageServiceLink('https://user@usage.example.com/plugins/fixture/_magpie/service/', pageUrl, original)).toBe('')
+  })
+
+  test('preserves every supported dashboard selection and accepts only a valid ordered custom range', () => {
+    const filters = { period: 'custom', from: '2026-11-26T08:00:00+08:00', to: '2026-11-27T00:00:00Z',
+      via: 'conversation', view: 'details', sourceId: revisionOne, model: '', metric: 'cost', layout: 'table' }
+    const raw = new URLSearchParams({ ...filters, token: 'fixture', after: 'fixture' })
+    expect(Object.fromEntries(new URLSearchParams(page.dashboardSearch(String(raw))))).toEqual(filters)
+    expect(page.dashboardSearch('?period=today&sourceId=local&model=vendor%2Fgpt')).toBe('?period=today&sourceId=local&model=vendor%2Fgpt')
+    for (const from of ['2026-02-30T00:00:00Z', '2026-11-28T00:00:00Z', '2026-11-26T00:00:00', '2026-11-26T00:00:00.00001Z']) {
+      const invalid = new URLSearchParams({ ...filters, from })
+      expect(new URLSearchParams(page.dashboardSearch(String(invalid))).has('period')).toBe(false)
+    }
+    expect(page.dashboardSearch('?view=config&via=unknown&layout=mobile&metric=usd&sourceId=token&model=%00')).toBe('')
+    expect(page.dashboardSearch(`?model=${'m'.repeat(513)}`)).toBe('')
+  })
+
+  test('keeps the device recovery ID and only validated listener and endpoint fields', () => {
+    const params = new URLSearchParams({ add: revisionOne, stage: 'register', retry: 'bind', ip: '0.0.0.0',
+      port: '3494', endpoint: 'https://hub.example/otlp/', revision: 'initial', digest: 'fixture' })
+    expect(Object.fromEntries(new URLSearchParams(page.receiverFragment(`#${params}`).slice(1)))).toEqual({
+      add: revisionOne, stage: 'register', retry: 'bind', ip: '0.0.0.0', port: '3494', endpoint: 'https://hub.example/otlp', revision: 'initial',
+    })
+    expect(page.receiverFragment('#add&digest=fixture')).toBe('#add')
+    expect(page.receiverFragment('#add=other&stage=register')).toBe('')
+    expect(page.receiverFragment(`#add=${revisionOne}&port=3494%0A&ip=1.2.3.4%0A&endpoint=https%3A%2F%2Ffixture%40hub.example%2F&revision=fixture`)).toBe(`#add=${revisionOne}`)
   })
 
   test('merges retained settings and can enable or stop the service through confirmed readbacks', async () => {
@@ -139,6 +173,7 @@ describe('plugin Options page', () => {
       checked = false
       disabled = false
       hidden = false
+      href = ''
       value = ''
       textContent = ''
       get valueAsNumber() { return Number(this.value) }
@@ -153,15 +188,22 @@ describe('plugin Options page', () => {
       return controls.get(id)!
     }
     let stored: Options = { ...original }
+    const service = 'https://usage.example.com/plugins/fixture/_magpie/service/'
+    const back = new URLSearchParams({ back: '?view=details&period=30d&sourceId=local&model=&token=fixture' })
     runInNewContext(await Bun.file(new URL('../../page/configuration.js', import.meta.url)).text(), {
       usageHubOptions: page,
       document: { getElementById: control, createElement: () => new Control() },
-      window: { location: { href: 'https://usage.example.com/plugins/fixture/' },
-        magpie: { options: { async get() { return { ...stored } }, async set(next: Options) { stored = next } } },
+      window: { location: { href: `https://usage.example.com/plugins/fixture/settings.html?${back}` },
+        magpie: { service, options: { async get() { return { ...stored } }, async set(next: Options) { stored = next } } },
       },
-      Event, setTimeout, clearTimeout,
+      Event, setTimeout, clearTimeout, URL,
     })
     await Bun.sleep(0)
+    for (const [id, tab] of [['return-dashboard', 'dashboard'], ['sources-link', 'sources'], ['diagnostic-link', 'status']]) {
+      const url = new URL(control(id).href)
+      expect(url.searchParams.get('to')).toBe(tab)
+      expect(url.searchParams.get('back')).toBe('?view=details&period=30d&sourceId=local&model=')
+    }
     control('centerGatewayUrl').value = 'http://127.0.0.1:3456/'
     control('centerGatewayUrl').dispatchEvent(new Event('input'))
     stored = { ...stored, requestTimeoutSec: 60, configRevision: page.createId() }
@@ -175,6 +217,11 @@ describe('plugin Options page', () => {
     control('save-settings').dispatchEvent(new Event('click', { cancelable: true }))
     await Bun.sleep(0)
     expect(stored).toMatchObject({ centerGatewayUrl: 'http://127.0.0.1:3456/', requestTimeoutSec: 60 })
+    control('centerGatewayUrl').value = ''
+    control('centerGatewayUrl').dispatchEvent(new Event('input'))
+    control('save-settings').dispatchEvent(new Event('click', { cancelable: true }))
+    await Bun.sleep(0)
+    expect(stored.centerGatewayUrl).toBeUndefined()
   })
 
   test('retains the saved view after write rejection and mismatched readback', async () => {

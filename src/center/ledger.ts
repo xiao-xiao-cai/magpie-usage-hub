@@ -51,7 +51,7 @@ export type SourceStatus = {
 }
 
 export type SourceEdit = { revision: string } & (
-  | { action: 'create'; name: string; digest: string; enabled: boolean }
+  | { action: 'create'; id?: string; name: string; digest: string; enabled: boolean }
   | { action: 'update'; id: string; name?: string; enabled?: boolean }
   | { action: 'rotate'; id: string; digest: string }
   | { action: 'revoke'; id: string; slot: 'current' | 'pending' | 'all' }
@@ -348,7 +348,8 @@ function centerStore(db: Database, centerId: string) {
   const editSource = db.transaction((edit: SourceEdit) => {
     if (edit.revision !== managementRevision()) throw new CenterFailure(409, 'source_revision_conflict')
     if (edit.action === 'create') {
-      const id = randomUUID()
+      const id = edit.id ?? randomUUID()
+      if (getSource.get(id)) throw new CenterFailure(409, 'source_id_in_use')
       db.run("INSERT INTO sources (id, name, enabled, revision, transport) VALUES (?, ?, ?, ?, 'otlp')",
         [id, edit.name, Number(edit.enabled), randomUUID()])
       addCredential(id, 'current', edit.digest)

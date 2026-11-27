@@ -1,22 +1,27 @@
 import assert from 'node:assert/strict'
+import { Database } from 'bun:sqlite'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { once } from 'node:events'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, realpath, rename, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 const exec = promisify(execFile)
-const [archiveArg, executableArg] = process.argv.slice(2)
+const [archiveArg, executableArg, previousArg] = process.argv.slice(2)
 assert(archiveArg && executableArg, 'Pass the candidate npm archive and installed magpie.exe')
 const archive = resolve(archiveArg)
+const previous = previousArg ? resolve(previousArg) : null
 const executable = resolve(executableArg)
 assert(archive.endsWith('.tgz') && executable.toLowerCase().endsWith('magpie.exe'))
+assert(!previous || (previous.endsWith('.tgz') && previous !== archive), 'Pass a distinct baseline archive for the upgrade check')
 const work = resolve(import.meta.dir, '../../.magpie-dev/otlp-host')
 await mkdir(work, { recursive: true })
 const stage = await mkdtemp(join(work, 'session-'))
 const packageRoot = join(stage, 'package')
+const candidateDirectory = previous ? join(stage, 'candidate') : stage
+const candidateRoot = join(candidateDirectory, 'package')
 const diagnosticPort = 3493
 const ingestPort = 35307
 const providerPort = 35407
@@ -26,6 +31,7 @@ const queryHeader = 'X-Magpie-Usage-Query'
 const adminHeader = 'X-Magpie-Usage-Admin'
 const loopback = (port: number) => `http://127.0.0.1:${port}`
 const directModel = 'usage-hub-otlp-session'
+const sessionDurationMs = 1_000
 
 type Page = { name: string; spec: string; url: string; service: string }
 type Profile = Awaited<ReturnType<typeof makeProfile>>
@@ -37,6 +43,8 @@ type Detail = { sourceId: string; t: string; model: string; via: string; input: 
 type Totals = { calls: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; unpriced: number }
 type Summary = { id: string; totals: Totals; buckets: { from: string; to: string; totals: Totals }[] }
 type Source = { id: string; isLocal: boolean; transport: string; phase: string; credentials: { current: boolean } }
+type LocalProgress = { cursor: string; active_generation: number; write_generation: number; last_seq: number }
+type SessionDelivery = { startTimeUnixNano: string; exported: boolean; receiverStatus?: number }
 
 async function makeProfile(name: string, gatewayPort: number, webPort: number) {
   const directory = join(stage, name)
@@ -181,11 +189,11 @@ async function assertOptions(web: WebPage, expected: Record<string, unknown>, sa
 
 async function seedDirectSession(profile: Profile, time: number, sessionModel = directModel) {
   const timestamp = new Date(time).toISOString()
-  const started = new Date(time - 1_000).toISOString()
+  const started = new Date(time - sessionDurationMs).toISOString()
   const directory = join(profile.codexDirectory, 'sessions', ...timestamp.slice(0, 10).split('-'))
   await mkdir(directory, { recursive: true })
   const id = crypto.randomUUID()
-  const turnId = 'fixture-turn'
+  const turnId = crypto.randomUUID()
   const events = [
     { timestamp: started, type: 'session_meta', payload: { id, session_id: id, source: 'cli' } },
     { timestamp: started, type: 'turn_context', payload: { turn_id: turnId, model: sessionModel, effort: 'low' } },
@@ -198,6 +206,35 @@ async function seedDirectSession(profile: Profile, time: number, sessionModel = 
     { encoding: 'utf8', flag: 'wx' })
 }
 
+function centerState(profile: Profile) {
+  return join(profile.directory, 'config', 'magpie')
+}
+
+async function readLocalProgress(profile: Profile, snapshot?: string) {
+  const config = centerState(profile)
+  const ledger = join(config, 'magpie-usage-hub', 'push', 'center.sqlite')
+  const db = new Database(ledger, { readonly: true })
+  try {
+    const checkpoint = db.query<LocalProgress, []>(
+      "SELECT cursor, active_generation, write_generation, last_seq FROM sources WHERE id = 'local'",
+    ).get()
+    assert(checkpoint && checkpoint.cursor && checkpoint.cursor !== 'start' && checkpoint.active_generation !== null,
+      'local checkpoint was not published')
+    if (snapshot) {
+      const check = db.query<{ quick_check: string }, []>('PRAGMA quick_check').get()
+      assert.equal(check?.quick_check, 'ok', 'baseline center database failed quick_check')
+      await mkdir(snapshot, { recursive: true })
+      await writeFile(join(snapshot, 'center.sqlite'), db.serialize(), { flag: 'wx' })
+      for (const file of ['plugins.json', 'plugins.yml', 'settings.json']) {
+        await copyFile(join(config, file), join(snapshot, file))
+      }
+    }
+    return checkpoint
+  } finally {
+    db.close()
+  }
+}
+
 async function addModelCall(profile: Profile, key: string, throughCalls: number, directCalls = 1) {
   const response = await request(`${profile.gateway}/v1/chat/completions`, {
     method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
@@ -205,7 +242,11 @@ async function addModelCall(profile: Profile, key: string, throughCalls: number,
   })
   assert(response.status === 200, `${profile.name} synthetic call: HTTP ${response.status}`)
   await response.body?.cancel()
-  return waitFor(`${profile.name} native ledger did not record fixture call`, 10_000, async () => {
+  return waitForNativeUsage(profile, throughCalls, directCalls)
+}
+
+async function waitForNativeUsage(profile: Profile, throughCalls: number, directCalls: number) {
+  return waitFor(`${profile.name} native ledger did not record ${throughCalls} gateway calls and ${directCalls} sessions`, 10_000, async () => {
     const totals = await json<NativeUsage>(await request(`${profile.gateway}/v1/magpie/usage/requests?computer=this&period=7d&offset=0&limit=1`), 'native totals')
     if (totals.through.calls !== throughCalls || totals.direct.calls !== directCalls) return
     const feed = await json<{ rows: NativeRow[]; has_more: boolean }>(await request(`${profile.gateway}/v1/magpie/usage/requests?cursor=start&limit=100`), 'native changes')
@@ -214,12 +255,14 @@ async function addModelCall(profile: Profile, key: string, throughCalls: number,
   })
 }
 
-async function centerPages(web: WebPage, revision: string) {
+async function centerPages(web: WebPage, revision: string | null, receiver?: 'off' | 'listening') {
   await request(web.proxy).catch(() => undefined)
   const sandbox = await waitFor('center did not apply its Options revision through the Web proxy', 25_000, async () => {
     const response = await request(new URL('api/status', web.proxy))
-    const status = await json<{ ready: boolean; role: string; appliedRevision: string }>(response, 'proxied status')
-    if (status.ready && status.role === 'center' && status.appliedRevision === revision) return response.headers.get('content-security-policy')
+    const status = await json<{ ready: boolean; role: string; appliedRevision: string | null; receiver?: string }>(response, 'proxied status')
+    if (status.ready && status.role === 'center' && status.appliedRevision === revision && (!receiver || status.receiver === receiver)) {
+      return response.headers.get('content-security-policy')
+    }
   })
   assert(sandbox?.includes('sandbox allow-scripts'), 'native proxy sandbox policy missing')
   const altered = new URL(web.proxy)
@@ -260,17 +303,22 @@ async function centerPages(web: WebPage, revision: string) {
   assert((await api('api/usage/rows', [queryHeader, adminToken])).status === 403, 'detail endpoint accepted an admin token')
   assert((await api('api/sources', [adminHeader, queryToken])).status === 403, 'management endpoint accepted a query token')
 
+  async function overview(filters: Record<string, string> = {}) {
+    const result = await api(`api/usage?${new URLSearchParams(filters)}`, [queryHeader, queryToken])
+    return json<{ range: { from: string; to: string }; sources: Summary[] }>(result, 'center summary')
+  }
   return {
+    overview,
     manage: async (body?: object) => json<{ revision: string; sources: Source[] }>(
       await api('api/sources', [adminHeader, adminToken], body), 'center management', body ? 201 : 200),
     summary: async (sourceId: string, filters?: Record<string, string>) => {
-      const params = new URLSearchParams({ sourceId, ...filters })
-      const result = await json<{ sources: Summary[] }>(await api(`api/usage?${params}`, [queryHeader, queryToken]), 'center summary')
+      const result = await overview({ sourceId, ...filters })
       assert(result.sources.length === 1 && result.sources[0]?.id === sourceId, 'source filter returned the wrong scope')
       return result.sources[0]
     },
-    rows: async (sourceId: string) => {
-      const params = new URLSearchParams({ sourceId, limit: '10' })
+    rows: async (sourceId?: string, filters?: Record<string, string>) => {
+      const params = new URLSearchParams({ limit: '10', ...filters })
+      if (sourceId) params.set('sourceId', sourceId)
       const result = await json<{ rows: Detail[]; nextPage: string | null }>(await api(`api/usage/rows?${params}`, [queryHeader, queryToken]), 'center details')
       assert(result.nextPage === null, 'tiny fixture was split into detail pages')
       return result.rows
@@ -294,49 +342,89 @@ async function reconcile(center: Awaited<ReturnType<typeof centerPages>>, source
   'center rows differ from native original times, model or Token counts')
 }
 
-const [center, source] = await Promise.all([makeProfile('center', 35107, 35207), makeProfile('source', 35108, 35208)])
-let fixture: ChildProcess | undefined
-let relay: Bun.Server<undefined> | undefined
-try {
+async function extractPackage(archive: string, directory: string) {
+  await mkdir(directory, { recursive: true })
   const { stdout } = await exec('tar.exe', ['-tf', archive], { windowsHide: true })
   const files = stdout.trim().split(/\r?\n/u)
   assert(files.every(file => /^package\/[\w@./-]+$/u.test(file) && !file.split('/').includes('..')), 'unexpected archive paths')
   for (const file of ['package/package.json', 'package/server.ts', 'package/page/index.html']) {
     assert(files.includes(file), `candidate archive is missing ${file}`)
   }
-  await exec('tar.exe', ['-xf', archive, '-C', stage], { windowsHide: true })
-  const manifest = await Bun.file(join(packageRoot, 'package.json')).json()
-  assert(manifest.name === 'magpie-usage-hub' && manifest.version === '0.7.0' && manifest.magpie.page.service.port === diagnosticPort,
-    'unexpected plugin candidate manifest')
-  const archiveHash = createHash('sha256').update(new Uint8Array(await Bun.file(archive).arrayBuffer())).digest('hex')
-  for (const port of [diagnosticPort, ingestPort, providerPort, center.gatewayPort, center.webPort, source.gatewayPort, source.webPort]) {
+  await exec('tar.exe', ['-xf', archive, '-C', directory], { windowsHide: true })
+  const manifest = await Bun.file(join(directory, 'package', 'package.json')).json()
+  assert(manifest.name === 'magpie-usage-hub' && typeof manifest.version === 'string' && manifest.magpie.page.service.port === diagnosticPort,
+    'unexpected plugin manifest')
+  return { version: manifest.version as string, hash: createHash('sha256').update(new Uint8Array(await Bun.file(archive).arrayBuffer())).digest('hex') }
+}
+
+async function prepareModel(profile: Profile, sessions = 1) {
+  const seedTime = Date.now() - 60_000
+  for (let index = 0; index < sessions; index += 1) {
+    await seedDirectSession(profile, seedTime + index * 1_000, sessions > 1 ? directModel : 'usage-hub-before-export')
+  }
+  await cli(profile, 'sessions', 'read', 'on', 'codex')
+  await cli(profile, 'provider', 'add', provider, `url=${loopback(providerPort)}/v1`, 'key=synthetic-provider-key', 'models=phase4-fixture-v1', 'list=off')
+  const issued = JSON.parse(await cli(profile, 'gateway-key', 'issue', '--ttl', '2h', '--name', 'Usage Hub isolated model', '--models', model, '--json'))
+  assert(typeof issued.key === 'string', `${profile.name} model key issuance failed`)
+  return issued.key as string
+}
+
+async function verifyFreshCenter(profile: Profile) {
+  const key = await prepareModel(profile)
+  try {
+    await launchHost(profile)
+    const initial = await signIn(profile)
+    await showLocalSessions(profile.web, initial.cookie)
+    const native = await addModelCall(profile, key, 1)
+    await stopHost(profile)
+    await cli(profile, 'plugin', 'add', candidateRoot)
+    await launchHost(profile)
+    const web = await openCenter(profile)
+    assert.deepEqual(await options(web), {}, 'fresh installation has persisted settings')
+    const dashboard = await centerPages(web, null, 'off')
+    assert(await portFree(3494), 'fresh installation opened the default OTLP receiver')
+    await waitFor('fresh center did not collect its local gateway and session', 20_000,
+      async () => (await dashboard.summary('local')).totals.calls === 2 ? true : undefined)
+    await reconcile(dashboard, 'local', native)
+    const { sources } = await dashboard.manage()
+    assert(sources.length === 1 && sources[0].isLocal, 'fresh source inventory differs')
+  } finally {
+    await stopHost(profile, true)
+  }
+}
+
+const [center, source, fresh] = await Promise.all([
+  makeProfile('center', 35107, 35207), makeProfile('source', 35108, 35208), makeProfile('fresh-center', 35109, 35209),
+])
+let fixture: ChildProcess | undefined
+let relay: Bun.Server<undefined> | undefined
+try {
+  const candidate = await extractPackage(archive, candidateDirectory)
+  const baseline = previous ? await extractPackage(previous, stage) : null
+  if (baseline) assert(baseline.hash !== candidate.hash, 'baseline and candidate contain the same archive')
+  for (const port of [diagnosticPort, 3494, ingestPort, providerPort, center.gatewayPort, center.webPort, source.gatewayPort, source.webPort,
+    fresh.gatewayPort, fresh.webPort]) {
     assert(await portFree(port), `isolated port ${port} is occupied`)
   }
   fixture = spawnQuiet(process.execPath, [join(import.meta.dir, 'fixture-provider.ts'), String(providerPort)])
   await waitFor('fixture model provider did not open', 10_000, async () => (await request(`${loopback(providerPort)}/v1/models`)).ok ? true : undefined)
+  await verifyFreshCenter(fresh)
   await cli(center, 'plugin', 'add', packageRoot)
-  const [centerModelKey, sourceModelKey] = await Promise.all([center, source].map(async profile => {
-    await seedDirectSession(profile, Date.now() - 60_000, 'usage-hub-before-export')
-    await cli(profile, 'sessions', 'read', 'on', 'codex')
-    await cli(profile, 'provider', 'add', provider, `url=${loopback(providerPort)}/v1`, 'key=synthetic-provider-key', 'models=phase4-fixture-v1', 'list=off')
-    const issued = JSON.parse(await cli(profile, 'gateway-key', 'issue', '--ttl', '2h', '--name', 'Usage Hub isolated model', '--models', model, '--json'))
-    assert(typeof issued.key === 'string', `${profile.name} model key issuance failed`)
-    return issued.key as string
-  }))
+  const [centerModelKey, sourceModelKey] = await Promise.all([prepareModel(center, 3), prepareModel(source)])
 
   await launchHost(center)
   const centerWeb = await openCenter(center)
   assert((await options(centerWeb)).enabled !== true, 'center installation enabled reporting by default')
   await showLocalSessions(center.web, centerWeb.cookie)
-  const centerNative = await addModelCall(center, centerModelKey, 1)
+  const centerNative = await addModelCall(center, centerModelKey, 1, 3)
   const centerOptions = { enabled: true, collectionMode: 'otlp', role: 'center', centerGatewayUrl: center.gateway,
     requestTimeoutSec: 3, ingestHost: '127.0.0.1', ingestPort, timeZone: 'Asia/Shanghai', configRevision: crypto.randomUUID() }
   await assertOptions(centerWeb, centerOptions, true)
   await warmPage(centerWeb)
-  const dashboard = await centerPages(centerWeb, centerOptions.configRevision)
+  const dashboard = await centerPages(centerWeb, centerOptions.configRevision, baseline ? undefined : 'listening')
   await assertOptions(centerWeb, centerOptions)
   await waitFor('center native call did not reach the center ledger', 15_000,
-    async () => (await dashboard.summary('local')).totals.calls === 2 ? true : undefined)
+    async () => (await dashboard.summary('local')).totals.calls === 4 ? true : undefined)
   await reconcile(dashboard, 'local', centerNative)
   const receiver = `${loopback(ingestPort)}/v1/traces`
   const unauthorized = await request(receiver, { method: 'POST' })
@@ -346,6 +434,8 @@ try {
   let simulateFailure = false
   let attempts = 0
   let retryCompleted = false
+  let sessionDelivery: SessionDelivery | undefined
+  const textDecoder = new TextDecoder()
   relay = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(input) {
     if (new URL(input.url).pathname !== '/v1/traces' || input.method !== 'POST') return new Response(null, { status: 404 })
     const headers = new Headers()
@@ -354,6 +444,9 @@ try {
       if (value) headers.set(name, value)
     }
     const body = await input.arrayBuffer()
+    const pendingDelivery = sessionDelivery
+    const sessionMatches = pendingDelivery && textDecoder.decode(body).includes(pendingDelivery.startTimeUnixNano)
+    if (sessionMatches) pendingDelivery.exported = true
     if (simulateFailure) {
       const digest = createHash('sha256').update(new Uint8Array(body)).digest('hex')
       retryBatch ??= digest
@@ -363,6 +456,7 @@ try {
       }
     }
     const response = await request(receiver, { method: 'POST', headers, body })
+    if (sessionMatches) pendingDelivery.receiverStatus = response.status
     if (simulateFailure && response.ok) {
       if (attempts === 2) {
         await response.body?.cancel()
@@ -397,26 +491,45 @@ try {
     'native Observability readback differs')
 
   await addModelCall(source, sourceModelKey, 1)
-  await seedDirectSession(source, Date.now())
-  await waitFor('native gateway and session generations did not reach the center', 25_000,
-    async () => (await dashboard.summary(sourceId)).totals.calls === 2 ? true : undefined)
+  await waitFor('native gateway attempt did not reach the center', 25_000,
+    async () => (await dashboard.summary(sourceId)).totals.calls === 1 ? true : undefined)
+  for (const exportedSessions of [1, 2]) {
+    const eventTime = Date.now()
+    const startedAt = eventTime - sessionDurationMs
+    const delivery: SessionDelivery = { startTimeUnixNano: String(BigInt(startedAt) * 1_000_000n), exported: false }
+    sessionDelivery = delivery
+    await seedDirectSession(source, eventTime)
+    const native = await waitForNativeUsage(source, 1, exportedSessions + 1)
+    assert(native.rows.some(row => row.origin === 'session' && row.model === directModel && Date.parse(row.t) === eventTime),
+      `Windows native ledger lost the original time of session ${exportedSessions}`)
+    await waitFor(`Windows session ${exportedSessions} did not reach the OTLP relay`, 25_000,
+      async () => delivery.exported ? true : undefined)
+    const status = await waitFor(`center receiver did not respond to Windows session ${exportedSessions}`, 10_000,
+      async () => delivery.receiverStatus)
+    assert.equal(status, 200, `center receiver rejected Windows session ${exportedSessions}`)
+    await waitFor(`Windows session ${exportedSessions} was not queryable at its original time`, 10_000, async () => {
+      const sessions = (await dashboard.rows(sourceId)).filter(row => row.via === 'session')
+      if (sessions.length === exportedSessions && sessions.some(row => Date.parse(row.t) === startedAt)) return true
+    })
+  }
+  sessionDelivery = undefined
   const rows = await dashboard.rows(sourceId)
   const gatewayRow = rows.find(row => row.via === 'through')
-  const sessionRow = rows.find(row => row.via === 'session')
+  const sessionRows = rows.filter(row => row.via === 'session')
   assert(gatewayRow && gatewayRow.model.endsWith('phase4-fixture-v1') && gatewayRow.input === 3 && gatewayRow.output === 1,
     'gateway attempt tokens or model differ')
-  assert(sessionRow?.model === directModel && sessionRow.input === 5 && sessionRow.output === 2,
-    'session exporter did not send the new local generation')
+  assert(sessionRows.length === 2 && sessionRows.every(row => row.model === directModel && row.input === 5 && row.output === 2),
+    'Windows session generations differ from native model or Token counts')
   assert(rows.every(row => row.sourceId === sourceId), 'unexpected remote source attribution')
 
   simulateFailure = true
   const callStartedAfter = Date.now()
-  await addModelCall(source, sourceModelKey, 2, 2)
+  await addModelCall(source, sourceModelKey, 2, 3)
   const callRecordedBy = Date.now()
   await waitFor('native retry after the temporary failure and repeated commit did not succeed', 25_000,
     async () => retryCompleted ? true : undefined)
   const retriedRows = await dashboard.rows(sourceId)
-  assert(retriedRows.length === 3, 'retry duplicated or dropped the generation')
+  assert(retriedRows.length === 4, 'retry duplicated or dropped the generation')
   const retried = retriedRows.find(row => row.via === 'through' && row.t !== gatewayRow.t)
   assert(retried && Date.parse(retried.t) >= callStartedAfter && Date.parse(retried.t) <= callRecordedBy,
     'retry lost original call time')
@@ -428,22 +541,60 @@ try {
 
   await stopHost(source)
   await stopHost(center, true)
+  const baselineCheckpoint = await readLocalProgress(center, baseline ? join(stage, 'before-upgrade') : undefined)
+  if (baseline) {
+    const sessionDirectory = await realpath(stage)
+    const currentPackage = await realpath(packageRoot)
+    const nextPackage = await realpath(candidateRoot)
+    assert(currentPackage === join(sessionDirectory, 'package') && nextPackage === join(sessionDirectory, 'candidate', 'package'),
+      'unexpected isolated package location')
+    await rename(currentPackage, join(dirname(currentPackage), 'previous-package'))
+    await rename(nextPackage, currentPackage)
+  }
   await launchHost(center)
   await waitFor('cold center receiver did not start before page access', 20_000,
     async () => (await request(receiver, { method: 'POST' })).status === 401 ? true : undefined)
   const reopened = await openCenter(center)
   await assertOptions(reopened, centerOptions)
-  const restored = await centerPages(reopened, centerOptions.configRevision)
+  const restored = await centerPages(reopened, centerOptions.configRevision, 'listening')
+  assert.deepEqual(await readLocalProgress(center), baselineCheckpoint, 'center local checkpoint changed at cold start')
   const sources = (await restored.manage()).sources
   assert(sources.some(item => item.id === sourceId && item.credentials.current && item.phase === 'receiving'), 'cold restart lost source registration')
   await reconcile(restored, 'local', centerNative)
   assert.deepEqual(await restored.rows(sourceId), retriedRows, 'cold restart lost remote history')
 
-  console.log(JSON.stringify({ archiveVersion: manifest.version, archiveHash, bun: Bun.version,
+  simulateFailure = false
+  await launchHost(source)
+  await signIn(source)
+  await addModelCall(source, sourceModelKey, 3, 3)
+  await waitFor('restarted center did not accept the next native delivery on the original source', 25_000,
+    async () => (await restored.summary(sourceId)).totals.calls === retriedRows.length + 1 ? true : undefined)
+  const continuedNative = await addModelCall(center, centerModelKey, 2, 3)
+  await waitFor('restarted center did not collect the next local call', 15_000,
+    async () => (await restored.summary('local')).totals.calls === 5 ? true : undefined)
+  await reconcile(restored, 'local', continuedNative)
+  const continuedCheckpoint = await readLocalProgress(center)
+  assert(continuedCheckpoint.cursor !== baselineCheckpoint.cursor && continuedCheckpoint.last_seq > baselineCheckpoint.last_seq
+    && continuedCheckpoint.active_generation === baselineCheckpoint.active_generation
+    && continuedCheckpoint.write_generation === baselineCheckpoint.write_generation,
+  'new local call did not advance the existing checkpoint after restart')
+  const { range } = await restored.overview({ period: '7d' })
+  const filters = { from: range.from, to: range.to, model: directModel, via: 'conversation' }
+  const conversation = await restored.overview({ ...filters, bucket: 'day' })
+  assert.deepEqual(conversation.sources.map(source => [source.id, source.totals.calls]), [['local', 3], [sourceId, 2]])
+  assert.equal(conversation.sources.reduce((sum, source) => sum + source.buckets.reduce((subtotal, bucket) => subtotal + bucket.totals.calls, 0), 0), 5)
+  const conversationRows = await restored.rows(undefined, filters)
+  assert.equal(conversationRows.filter(row => row.sourceId === 'local' && row.via === 'direct').length, 3)
+  assert.equal(conversationRows.filter(row => row.sourceId === sourceId && row.via === 'session').length, 2)
+  assert.equal(conversationRows.length, 5)
+  console.log(JSON.stringify({ archiveVersion: candidate.version, archiveHash: candidate.hash, baselineHash: baseline?.hash,
+    freshLocalCalls: 2, freshReceiver: 'off', originalSourceAfterRestart: true, originalLocalCursor: true, continuedLocalCursor: true,
+    conversationCalls: { center: 3, windows: 2, total: 5 }, finalSourceRows: retriedRows.length + 1, bun: Bun.version,
     centerMagpie: centerWeb.version, sourceMagpie: sourceWeb.version, hostMode: 'serve --web',
     nativeObservability: true, sourceUsageHubInstalled: false, proxyAuthorization: true, proxyPreflight: true,
-    receiverAuthorization: true, attempts, persistedHistory: true, initialSourceGatewaySpans: 1, sourceSessionSpans: 1,
-    sourceUsageRows: retriedRows.length, centerCalls: 2, duplicateRows: 0, originalTimeBucket: true, coldCenterBeforePageAccess: true }))
+    receiverAuthorization: true, attempts, persistedHistory: true, initialSourceGatewaySpans: 1, sourceSessionSpans: sessionRows.length,
+    sourceUsageRows: retriedRows.length, centerCalls: 4, centerCallsAfterUpgrade: 5, duplicateRows: 0,
+    originalTimeBucket: true, coldCenterBeforePageAccess: true }))
 } finally {
   try {
     await stopHost(source)

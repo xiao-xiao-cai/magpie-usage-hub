@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { createDiagnostics, type Diagnostics } from '../diagnostics.ts'
+import type { Diagnostics } from '../diagnostics.ts'
 import { acquireGatewayLock, logRuntime, prepareLedgerDirectory, reportBlocked } from '../host.ts'
 import type { CenterOptions } from '../options.ts'
 import { ReportingFailure, runSynchronization, type ReportingTarget } from '../sync/runner.ts'
@@ -31,37 +31,47 @@ export async function runCenter(stateDirectory: string, options: CenterOptions, 
     const directory = await prepareLedgerDirectory(owner.directory)
     const ledger = openCenterLedger(join(directory, 'center.sqlite'))
     close = () => ledger.db.close()
-    const receiver = Bun.serve({
-      hostname: options.ingestHost, port: options.ingestPort, fetch: createIngest(ledger),
-      maxRequestBodySize: maximumOtlpBodyBytes, idleTimeout: 15, development: false,
-    })
-    receiver.unref()
-    close = () => {
-      try { void receiver.stop(true) } finally { ledger.db.close() }
+    let listenerFailure: { stage: 'options' | 'center'; code: string } | null = null
+    if (options.receiver && 'error' in options.receiver) {
+      listenerFailure = { stage: 'options', code: options.receiver.error }
+    } else if (options.receiver) {
+      try {
+        const receiver = Bun.serve({
+          hostname: options.receiver.host, port: options.receiver.port, fetch: createIngest(ledger),
+          maxRequestBodySize: maximumOtlpBodyBytes, idleTimeout: 15, development: false,
+        })
+        receiver.unref()
+        close = () => {
+          try { void receiver.stop(true) } finally { ledger.db.close() }
+        }
+      } catch {
+        listenerFailure = { stage: 'center', code: 'ingest_listener_unavailable' }
+      }
     }
-    process.once('exit', () => {
-      try { ledger.db.close() } catch {}
-      try { owner.lock.release() } catch {}
-    })
     const sourceId = 'local'
     const local: ReportingTarget = {
       checkpoint: () => localReporting(() => ledger.checkpoint(sourceId)),
       commit: page => localReporting(() => ledger.commit(page)),
       recover: report => localReporting(() => ledger.recover(report)),
     }
-    const collectorStatus = createDiagnostics(diagnostics.getStatus().loadedRevision, 'center')
-    diagnostics.update({ phase: 'ready', appliedRevision: diagnostics.getStatus().loadedRevision,
-      ready: true, failure: null, retryAt: null,
-    })
-    logRuntime({ status: 'center_ready' })
-    void runSynchronization({ ...options, sourceId }, async () => {
-      await owner.checkCollectionGateway()
-      return local
-    }, collectorStatus)
-    return {
+    const services = {
       dashboard: createDashboard(ledger, options.timeZone),
       manage: createSourceManagement(ledger),
     }
+    process.once('exit', () => {
+      try { close?.() } catch {}
+      try { owner.lock.release() } catch {}
+    })
+    diagnostics.update({ phase: 'ready', appliedRevision: listenerFailure ? null : diagnostics.getStatus().loadedRevision,
+      receiver: listenerFailure ? 'failed' : options.receiver ? 'listening' : 'off',
+      ready: true, failure: listenerFailure, retryAt: null, collectorPhase: 'starting',
+    })
+    logRuntime({ status: 'center_ready', receiver: diagnostics.getStatus().receiver, ...(listenerFailure ?? {}) })
+    void runSynchronization({ ...options, sourceId }, async () => {
+      await owner.checkCollectionGateway()
+      return local
+    }, diagnostics)
+    return services
   } catch (error) {
     try { close?.() } catch {}
     try { owner.lock.release() } catch {}

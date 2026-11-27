@@ -28,9 +28,7 @@
       "file": "page/index.html",
       "service": { "port": 3493 }
     },
-    "options": {
-      "enabled": false
-    }
+    "options": {}
   },
   "scripts": {
     "test": "bun test",

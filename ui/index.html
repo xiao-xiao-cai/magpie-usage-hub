@@ -4,33 +4,45 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>后台诊断 · Magpie Usage Hub</title>
+  <title>运行诊断 · Magpie Usage Hub</title>
+  <link rel="stylesheet" href="../shared.css">
   <link rel="stylesheet" href="status.css">
+  <script defer src="../options.js"></script>
+  <script defer src="../host.js"></script>
   <script defer src="status.js"></script>
 </head>
 <body>
-  <main>
-    <header>
+  <main class="workspace">
+    <header class="toolbar">
       <div>
-        <nav aria-label="插件页面">
-          <a href="../../index.html">返回配置</a>
-          <a id="dashboard-link" href="dashboard/" hidden>用量看板</a>
-        </nav>
-        <h1>后台诊断</h1>
+        <a id="dashboard-link" href="../dashboard/">返回用量看板</a>
+        <h1>配置</h1>
       </div>
-      <button id="refresh" type="button">刷新</button>
+      <nav class="segmented" aria-label="配置页面"><a id="sources-link" href="../sources/">来源管理</a><a id="settings-link" href="../../../settings.html">中心设置</a><span aria-current="page">运行诊断</span></nav>
     </header>
     <p id="notice" role="status">正在读取后台状态…</p>
-    <section id="status" aria-labelledby="runtime-heading" hidden>
+    <section class="panel"><div class="toolbar"><h2>运行诊断</h2><button id="refresh" type="button">刷新</button></div>
+    <div id="status" aria-labelledby="runtime-heading" hidden>
       <h2 id="runtime-heading">插件宿主</h2>
       <dl>
         <div><dt>状态</dt><dd id="phase"></dd></div>
+        <div><dt>远端接收</dt><dd id="receiver"></dd></div>
         <div id="retry-row" hidden><dt>下次重试</dt><dd id="retry"></dd></div>
         <div><dt>宿主读取的修订</dt><dd id="loaded-revision" class="revision"></dd></div>
         <div><dt>后台采用的修订</dt><dd id="applied-revision" class="revision"></dd></div>
       </dl>
       <p id="failure" class="failure" hidden></p>
-    </section>
+      <section id="collector" aria-labelledby="collector-heading" hidden>
+        <h2 id="collector-heading">中心本机采集</h2>
+        <dl>
+          <div><dt>采集状态</dt><dd id="collector-phase"></dd></div>
+          <div id="last-sync-row"><dt>最近完成同步</dt><dd id="last-sync"></dd></div>
+          <div id="last-page-row"><dt>最近确认用量页</dt><dd id="last-page"></dd></div>
+          <div id="collector-retry-row" hidden><dt>下次采集重试</dt><dd id="collector-retry"></dd></div>
+        </dl>
+        <p id="collector-failure" class="failure" hidden></p>
+      </section>
+    </div></section>
   </main>
 </body>
 </html>

@@ -6,128 +6,103 @@
   <meta name="color-scheme" content="light dark">
   <meta name="usage-query-token" content="__USAGE_QUERY_TOKEN__">
   <title>用量看板 · Magpie Usage Hub</title>
+  <link rel="stylesheet" href="../shared.css">
   <link rel="stylesheet" href="dashboard.css">
+  <script defer src="../options.js"></script>
+  <script defer src="../host.js"></script>
   <script defer src="dashboard.js"></script>
 </head>
 <body>
-  <main>
-    <header>
-      <h1>用量看板</h1>
-      <nav class="controls" aria-label="中心页面">
-        <a href="../sources/">来源管理</a>
-        <a href="../">后台诊断</a>
-      </nav>
-    </header>
-    <form id="filters" class="filters" novalidate aria-label="用量筛选">
-      <div class="filter-field">
-        <label for="period">统计周期</label>
-        <select id="period">
-          <option value="today">今天</option>
-          <option value="7d" selected>近 7 天</option>
-          <option value="30d">近 30 天</option>
-          <option value="custom">自定义起止</option>
-        </select>
+  <main class="workspace dashboard">
+    <h1 class="dashboard-header">用量看板</h1>
+    <div class="toolbar dashboard-toolbar" aria-label="看板工具栏">
+      <div class="segmented" role="group" aria-label="视图">
+        <button id="view-overview" type="button" aria-pressed="true">概览</button>
+        <button id="view-details" type="button" aria-pressed="false">明细</button>
       </div>
-      <div class="filter-field">
-        <label for="source">来源</label>
-        <select id="source"><option value="">全部来源</option></select>
+      <div class="segmented" role="group" aria-label="统计周期">
+        <button id="period-today" type="button" aria-pressed="false">今天</button>
+        <button id="period-7d" type="button" aria-pressed="true">近 7 天</button>
+        <button id="period-30d" type="button" aria-pressed="false">近 30 天</button>
+        <button id="period-custom" type="button" aria-pressed="false" aria-expanded="false" aria-controls="custom-range">自定义</button>
       </div>
-      <div class="filter-field">
-        <label for="via">用量分项</label>
-        <select id="via">
-          <option value="">全部分项</option>
-          <option value="through">网关</option>
-          <option value="direct">原生本机会话</option>
-          <option value="session">OTLP 会话</option>
-        </select>
-      </div>
-      <div class="filter-field">
-        <label for="model">模型</label>
-        <select id="model"><option value="">全部模型</option></select>
-      </div>
-      <div class="filter-field">
-        <label for="bucket">趋势粒度</label>
-        <select id="bucket">
-          <option value="hour">小时</option>
-          <option value="day" selected>日</option>
-          <option value="">关闭趋势</option>
-        </select>
-      </div>
-      <button id="refresh" type="submit">查询</button>
-      <div id="custom-range" class="custom-range" hidden>
-        <div class="filter-field">
-          <label for="from">开始时间</label>
-          <input id="from" type="text" maxlength="40" placeholder="2026-11-27T08:00:00+08:00" autocomplete="off" spellcheck="false" aria-describedby="range-hint">
-        </div>
-        <div class="filter-field">
-          <label for="to">结束时间</label>
-          <input id="to" type="text" maxlength="40" placeholder="2026-11-27T09:00:00+08:00" autocomplete="off" spellcheck="false" aria-describedby="range-hint">
-        </div>
-        <small id="range-hint" class="muted">含开始、不含结束。请在时间后填写时区偏移（如 +08:00）或 Z。</small>
-      </div>
+      <label class="inline-field" for="via">口径 <select id="via">
+        <option value="through">网关</option><option value="conversation">会话</option><option value="all">全部分项</option>
+      </select></label>
+      <button id="refresh" type="button">刷新</button>
+      <div id="billing" class="billing" hidden><span>已计价估算费用 <strong id="billed"></strong></span><span id="unpriced" hidden></span></div>
+      <a id="settings" class="config-link" href="../sources/">配置</a>
+    </div>
+    <form id="custom-range" class="range-form panel" hidden>
+      <label for="from">开始时间<input id="from" type="text" required maxlength="40" placeholder="2026-11-27T08:00:00+08:00" autocomplete="off" spellcheck="false" aria-describedby="range-hint"></label>
+      <label for="to">结束时间<input id="to" type="text" required maxlength="40" placeholder="2026-11-27T09:00:00+08:00" autocomplete="off" spellcheck="false" aria-describedby="range-hint"></label>
+      <button class="primary" type="submit">应用时间</button>
+      <small id="range-hint" class="muted">使用带时区偏移或 Z 的时间。区间含开始、不含结束。</small>
+      <span id="range-error" role="status"></span>
     </form>
-    <p id="notice" class="notice" role="status">正在读取用量…</p>
+    <div class="feedback"><span id="notice" role="status">正在读取用量…</span><button id="retry" type="button" hidden>重试</button><button id="reload" type="button" hidden>重新加载页面</button></div>
+    <div id="loading" class="panel loading-stats" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+    <aside id="register-banner" class="register-banner" hidden>
+      <strong>当前仅展示中心本机用量，尚未配置其他来源。</strong><a id="register" href="../sources/#add">配置来源</a>
+    </aside>
     <div id="results" aria-busy="true" hidden>
-      <section aria-labelledby="summary-heading">
-        <h2 id="summary-heading">分来源汇总</h2>
-        <p id="range-label" class="muted"></p>
-        <p id="otlp-count-note" class="muted" hidden>OTLP 按收到的网关尝试和会话生成计数，同一次调用可能出现在两个分项。中心本机和历史来源按原生请求计数。</p>
-        <div class="table-scroll" role="region" tabindex="0" aria-label="分来源用量汇总表">
-          <table class="summary">
-            <thead>
-              <tr>
-                <th scope="col">来源</th><th scope="col">状态</th><th scope="col">记录首末时间</th>
-                <th scope="col">计数</th><th scope="col">输入 / 输出 Token</th><th scope="col">缓存读 / 写 Token</th>
-                <th scope="col">已计价估算费用（USD）</th><th scope="col">缺价记录</th>
-              </tr>
-            </thead>
-            <tbody id="summary-rows"></tbody>
-          </table>
+      <div class="scope-bar">
+        <label class="inline-field" for="source">来源 <select id="source"><option value="">全部来源</option></select></label>
+        <label id="model-field" class="inline-field" for="model" hidden>模型 <select id="model"><option value="">全部模型</option></select></label>
+        <div class="scope-time muted"><span id="range-label"></span><span>汇总读取于 <time id="read-at"></time></span></div>
+      </div>
+      <div id="overview">
+        <p id="usage-empty" class="usage-empty" hidden></p>
+        <div class="panel kpis" aria-label="用量指标">
+          <section class="kpi"><h2>Token</h2><strong id="kpi-tokens">—</strong><small id="token-note"></small></section>
+          <section class="kpi"><h2>缓存读取</h2><strong id="kpi-cache">—</strong><small id="cache-note"></small></section>
+          <section class="kpi"><h2>推理 Token</h2><strong id="kpi-reasoning">—</strong><small>已包含在输出 Token 中</small></section>
+          <section class="kpi"><h2>计量次数</h2><strong id="kpi-calls">—</strong><small id="calls-note"></small></section>
         </div>
-      </section>
-
-      <section id="trend" aria-labelledby="trend-heading" hidden>
-        <h2 id="trend-heading">用量趋势</h2>
-        <div id="trends"></div>
-      </section>
-
-      <section aria-labelledby="models-heading">
-        <h2 id="models-heading">模型分布</h2>
-        <p id="models-empty" class="muted" hidden>此查询没有可显示的模型。</p>
-        <div id="models-table" class="table-scroll" role="region" tabindex="0" aria-label="模型分布表" hidden>
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">模型</th><th scope="col">来源</th><th scope="col">计数</th>
-                <th scope="col">输入 / 输出 Token</th><th scope="col">缓存读 / 写 Token</th>
-                <th scope="col">已计价估算费用（USD）</th><th scope="col">缺价记录</th>
-              </tr>
-            </thead>
-            <tbody id="model-rows"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section id="rows-section" aria-labelledby="rows-heading">
-        <h2 id="rows-heading">用量明细</h2>
-        <p id="rows-notice" class="notice" role="status"></p>
-        <div id="rows-table" class="table-scroll" role="region" tabindex="0" aria-label="用量明细表" hidden>
-          <table class="rows">
-            <thead>
-              <tr>
-                <th scope="col">调用时间</th><th scope="col">来源</th><th scope="col">模型</th><th scope="col">分项</th>
-                <th scope="col">输入 / 输出 Token</th><th scope="col">缓存读 / 写 Token</th><th scope="col">推理 Token</th>
-                <th scope="col">估算费用（USD）</th><th scope="col">HTTP 状态</th><th scope="col">用时（毫秒）</th>
-              </tr>
-            </thead>
-            <tbody id="detail-rows"></tbody>
-          </table>
-        </div>
-        <div id="row-pages" class="controls" aria-label="用量明细分页" hidden>
-          <button id="previous-rows" type="button">上一页</button>
-          <span id="current-page" class="muted"></span>
-          <button id="next-rows" type="button">下一页</button>
-        </div>
+        <section class="panel trend-panel" aria-labelledby="trend-heading">
+          <div class="panel-header"><div class="panel-title"><h2 id="trend-heading">用量趋势</h2><small id="grain" class="muted"></small></div>
+            <div class="segmented" role="group" aria-label="趋势指标"><button id="metric-tokens" type="button" aria-pressed="true">Token</button><button id="metric-calls" type="button" aria-pressed="false">次数</button><button id="metric-cost" type="button" aria-pressed="false">费用</button></div>
+          </div>
+          <p id="trend-empty" class="empty" hidden></p>
+          <div id="chart" hidden>
+            <div id="point-value" class="point-value"></div>
+            <div class="plot-frame"><div id="y-axis" class="y-axis" aria-hidden="true"></div>
+              <div id="plot" role="slider" tabindex="0" aria-label="用量趋势时间点" aria-describedby="point-value chart-help" aria-valuemin="1" aria-valuemax="1" aria-valuenow="1">
+              <svg viewBox="0 0 1000 124" preserveAspectRatio="none" aria-hidden="true">
+                <defs><linearGradient id="trend-fill" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox"><stop offset="0" class="fill-top"/><stop offset="1" class="fill-bottom"/></linearGradient></defs>
+                <path class="grid-lines" d="M0 4H1000 M0 62H1000 M0 120H1000"/>
+                <path id="trend-area" fill="url(#trend-fill)"/><path id="trend-line" class="trend-line"/>
+                <path id="point-guide" class="point-guide"/>
+              </svg></div>
+            </div>
+            <div id="x-axis" class="x-axis" aria-hidden="true"></div>
+            <small id="chart-help" class="sr-only">使用左右方向键查看相邻时间点，Home 和 End 跳至首末时间点。</small>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="sources-heading">
+          <div class="panel-header"><h2 id="sources-heading">来源分布</h2>
+            <div class="segmented" role="group" aria-label="来源展示"><button id="layout-cards" type="button" aria-pressed="true">卡片</button><button id="layout-table" type="button" aria-pressed="false">表格</button></div>
+          </div>
+          <div id="source-cards" class="source-cards"></div>
+          <div id="sources-table" class="table-scroll" role="region" aria-label="来源用量" tabindex="0" hidden><table>
+            <thead><tr><th>来源</th><th>Token</th><th>次数</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>推理</th><th>已计价费用</th><th>缺价记录</th></tr></thead>
+            <tbody id="summary-rows"></tbody></table></div>
+        </section>
+        <section class="panel" aria-labelledby="models-heading">
+          <div class="panel-header"><h2 id="models-heading">模型排行</h2><small class="muted">按 Token 降序</small></div>
+          <p id="models-empty" class="empty" hidden>所选范围内暂无模型用量。</p>
+          <div id="models-table" class="table-scroll" role="region" aria-label="模型用量排行" tabindex="0"><table>
+            <thead><tr><th>模型</th><th>Token</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>次数</th><th>已计价费用</th><th>缺价记录</th></tr></thead>
+            <tbody id="model-rows"></tbody></table></div>
+        </section>
+      </div>
+      <section id="rows-section" class="panel" aria-labelledby="rows-heading" hidden>
+        <div class="panel-header"><h2 id="rows-heading">用量明细</h2></div>
+        <div class="feedback"><span id="rows-notice" role="status"></span><button id="rows-retry" type="button" hidden>重试明细</button><button id="rows-reload" type="button" hidden>重新加载页面</button></div>
+        <div id="rows-table" class="table-scroll" role="region" tabindex="0" aria-label="用量明细表" hidden><table>
+          <thead><tr><th>调用时间</th><th>来源</th><th>模型</th><th>分项</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>推理 Token</th><th>估算费用（USD）</th><th>HTTP 状态</th><th>用时（毫秒）</th></tr></thead>
+          <tbody id="detail-rows"></tbody></table></div>
+        <div id="row-pages" class="row-pages" aria-label="用量明细分页" hidden><button id="previous-rows" type="button">上一页</button><span id="current-page"></span><button id="next-rows" type="button">下一页</button></div>
       </section>
     </div>
   </main>

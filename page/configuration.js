@@ -39,7 +39,7 @@
   }
 
   function inputValue(name) {
-    return name === 'enabled' ? inputs[name].checked : inputs[name].value
+    return name === 'enabled' || name === 'receiverEnabled' ? inputs[name].checked : inputs[name].value
   }
 
   function readDirtyFields() {
@@ -51,29 +51,26 @@
     saved = newSaved
     for (const [name, value] of Object.entries(options.settingsView(saved))) {
       if (!reset && dirtyFields.has(name)) continue
-      if (name === 'enabled') inputs[name].checked = value
+      if (name === 'enabled' || name === 'receiverEnabled') inputs[name].checked = value
       else inputs[name].value = value
     }
     dirtyFields = readDirtyFields()
   }
 
   function updateDiagnosticLink() {
-    const link = element('diagnostic-link')
-    const guide = element('diagnostic-guide')
     const revision = options.revision(saved?.configRevision)
-    const center = options.centerEnabled(saved)
     element('revision-value').textContent = revision
     element('settings-revision').hidden = !revision
     const href = saved && options.pageServiceLink(window.magpie?.service, window.location.href, saved)
-    link.hidden = !href
-    if (!href) {
-      link.removeAttribute('href')
-      guide.textContent = '在 Magpie Web 的插件页打开后台诊断。'
-      return
+    if (!href) return
+    const back = options.dashboardSearch(new URL(window.location.href).searchParams.get('back'))
+    for (const [id, view] of [['return-dashboard', 'dashboard'], ['sources-link', 'sources'], ['diagnostic-link', 'status']]) {
+      const url = new URL(href)
+      url.searchParams.set('to', view)
+      if (back) url.searchParams.set('back', back)
+      element(id).href = url.href
+      element(id).hidden = false
     }
-    link.href = href
-    link.textContent = center ? '打开用量看板' : '打开后台诊断'
-    guide.textContent = center ? '从看板查询用量和管理上报来源。' : '在后台诊断查看设置生效情况。'
   }
 
   function render(state) {

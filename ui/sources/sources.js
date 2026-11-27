@@ -29,7 +29,16 @@ let baseRevision = ''
 let busy = false
 let stale = false
 let needsReview = false
+let managementExpired = false
 let confirmation
+const receiver = createReceiverWizard(byId, controls)
+const back = window.usageHubHost.backSearch()
+const navigation = back ? `?back=${encodeURIComponent(back)}` : ''
+const reentry = new URLSearchParams({ to: 'sources' })
+if (back) reentry.set('back', back)
+byId('back-dashboard').href = `../dashboard/${back}`
+byId('settings-link').href = `../../../settings.html${navigation}`
+byId('status-link').href = `../status/${navigation}`
 
 function draft() {
   const name = fields.name.value.trim()
@@ -56,9 +65,9 @@ function conflict() {
 }
 
 function readSnapshot(value) {
-  if (typeof value?.revision !== 'string' || !value.revision || !Array.isArray(value.sources)) throw new Error()
+  if (!usageHubOptions.revision(value?.revision) || !Array.isArray(value.sources)) throw new Error()
   for (const source of value.sources) {
-    if (typeof source?.id !== 'string' || typeof source.name !== 'string' || typeof source.enabled !== 'boolean'
+    if ((source?.id !== 'local' && !usageHubOptions.revision(source?.id)) || typeof source.name !== 'string' || typeof source.enabled !== 'boolean'
       || !['local', 'legacy', 'otlp'].includes(source.transport) || typeof source.credentials?.current !== 'boolean'
       || typeof source.credentials.pending !== 'boolean' || typeof source.credentials.pendingVerified !== 'boolean') throw new Error()
   }
@@ -91,30 +100,47 @@ function rebuildAllowed(source) {
   return source?.transport === 'local' && (source.rebuildAllowed ?? source.phase === 'recovery_required')
 }
 
+function canConnect(source) {
+  return source?.transport === 'otlp' && source.enabled && (source.credentials.current || source.credentials.pending)
+}
+
 function controls() {
   const latest = selected()
   const local = latest?.transport === 'local'
   const historical = latest?.transport === 'legacy'
   const otlp = latest?.transport === 'otlp'
+  const wizard = receiver.active
   const editable = !base.id || otlp
-  const blocked = busy || stale || !snapshot || conflict()
+  const waiting = busy || receiver.busy
+  const blocked = waiting || stale || !snapshot || conflict()
   const editing = Boolean(base.id)
   const { name, enabled, digest, rotation } = draft()
   const credential = latest?.credentials
 
-  byId('refresh-sources').disabled = busy
-  byId('sources-section').setAttribute('aria-busy', String(busy))
-  form.hidden = !editable
-  form.setAttribute('aria-busy', String(busy))
-  byId('source-fields').disabled = busy || !snapshot || !editable
+  byId('editor').hidden = !wizard && !editing
+  byId('add-source').disabled = waiting || !snapshot
+  byId('refresh-sources').disabled = waiting
+  byId('refresh-receipt').disabled = waiting
+  byId('management-reentry').hidden = !managementExpired
+  if (managementExpired) byId('resume-management').href = `../?${reentry}${usageHubOptions.receiverFragment(window.location.hash)}`
+  byId('sources-section').setAttribute('aria-busy', String(waiting))
+  form.hidden = !editable || receiver.completed
+  form.setAttribute('aria-busy', String(waiting))
+  byId('source-fields').disabled = waiting || !snapshot || !editable
+  byId('name-field').hidden = editing && wizard
+  byId('enabled-field').hidden = wizard
   byId('create-credential').hidden = editing
+  byId('token-guide').hidden = editing || !wizard
   byId('save-source').disabled = blocked || Boolean(confirmation) || !editable
-    || (name === undefined && enabled === undefined && !digest)
+    || (wizard ? receiver.blocked || receiver.completed : name === undefined && enabled === undefined && !digest)
+  byId('save-source').textContent = wizard ? editing ? '确认中心接收设置' : '登记设备并连接中心' : '保存来源'
   byId('source-identity').hidden = !latest || local
   byId('source-id').textContent = latest && !local ? latest.id : ''
   byId('local-source-hint').hidden = !local
   byId('historical-source-hint').hidden = !historical
-  byId('source-credentials').hidden = !otlp
+  byId('source-credentials').hidden = !otlp || wizard
+  byId('resume-source').hidden = wizard || !canConnect(latest)
+  byId('resume-source').disabled = blocked || Boolean(confirmation)
   byId('credential-status').textContent = otlp ? credentialLabel(latest) : ''
   rotationForm.hidden = Boolean(credential?.pending && !rotation)
   fields.rotation.disabled = busy
@@ -131,14 +157,17 @@ function controls() {
   byId('action-confirmation').hidden = !confirmation
   byId('confirm-action').disabled = blocked
   byId('cancel-action').disabled = busy
-  byId('reset-source').hidden = !editing && name === undefined && enabled === undefined && !digest
-  byId('reset-source').disabled = busy
-  byId('reset-source').textContent = editing ? '返回添加 OTLP 来源' : '清空草稿'
+  byId('reset-source').hidden = !wizard && !editing
+  byId('reset-source').disabled = waiting
   byId('revision-review').hidden = stale || !conflict()
   byId('review-latest').disabled = busy || Boolean(editing && !latest)
   byId('latest-source').textContent = latest
     ? `当前已保存为「${latest.name}」，${sourceStatus(latest)}。${otlp ? `${credentialLabel(latest)}。` : ''}`
-    : editing ? '当前来源已不存在。可返回添加 OTLP 来源。' : '来源列表已更新，请核对后继续。'
+    : editing ? '当前来源已不存在。请返回来源列表。' : '来源列表已更新，请核对后继续。'
+  const receipt = formatTime(latest?.lastPageAt)
+  byId('first-receipt').textContent = receiver.completed
+    ? receipt ? `已收到用量。最近接收 ${receipt}。` : '等待首次上报。' : ''
+  receiver.render(busy)
 }
 
 function showEditor(source = newSource) {
@@ -146,7 +175,7 @@ function showEditor(source = newSource) {
   baseRevision = snapshot.revision
   needsReview = false
   confirmation = undefined
-  byId('source-title').textContent = !source.id ? '添加 OTLP 来源'
+  byId('source-title').textContent = receiver.active ? source.id ? `设备接入 · ${source.name}` : '添加设备' : !source.id ? '添加设备'
     : source.transport === 'otlp' ? `编辑来源 · ${source.name}` : source.name
   restore({ name: source.name, enabled: source.enabled, digest: '', rotation: '' })
   notice.textContent = ''
@@ -170,13 +199,19 @@ function appendNote(cell, text) {
 function sourceStatus(source) {
   if (source.transport === 'legacy') return '历史来源'
   if (!source.enabled) return '已暂停'
-  if (source.transport === 'otlp') return source.phase === 'receiving' ? '已收到用量' : '等待首次上报'
+  if (source.transport === 'otlp') return formatTime(source.lastPageAt) ? '已收到用量' : '等待首次上报'
   if (source.phase === 'recovery_required') return '待确认重建'
   if (source.phase === 'rebuilding') return '重建中'
   if (!source.lastSeenAt) return '等待首次采集'
   if (Date.now() - Date.parse(source.lastSeenAt) > 180_000) return '暂失联'
   if (source.phase === 'backfill') return '正在回填历史'
   return source.hasMore ? '追赶中' : '已同步'
+}
+
+function formatTime(value) {
+  if (typeof value !== 'string') return ''
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? dateTime.format(time) : ''
 }
 
 function rowFor(source) {
@@ -186,12 +221,14 @@ function rowFor(source) {
   const reason = source.transport === 'local' && recoveryText.get(source.recoveryReason)
   if (reason) appendNote(status, reason)
   if (source.gap?.missingRows > 0) appendNote(status, `上次重建未找到 ${source.gap.missingRows} 条旧记录`)
+  const lastPage = formatTime(source.lastPageAt)
   if (source.transport === 'otlp') {
-    appendCell(row, source.lastPageAt ? `最近接收 ${dateTime.format(Date.parse(source.lastPageAt))}` : '暂无')
+    appendCell(row, lastPage ? `最近接收 ${lastPage}` : '暂无')
   } else {
-    const contact = appendCell(row, source.lastSeenAt ? dateTime.format(Date.parse(source.lastSeenAt)) : '暂无')
-    if (source.lastSyncedAt) appendNote(contact, `最近完成 ${dateTime.format(Date.parse(source.lastSyncedAt))}`)
-    if (source.lastPageAt) appendNote(contact, `最近确认页 ${dateTime.format(Date.parse(source.lastPageAt))}`)
+    const contact = appendCell(row, formatTime(source.lastSeenAt) || '暂无')
+    const syncedAt = formatTime(source.lastSyncedAt)
+    if (syncedAt) appendNote(contact, `最近完成 ${syncedAt}`)
+    if (lastPage) appendNote(contact, `最近确认页 ${lastPage}`)
   }
   appendCell(row, credentialLabel(source))
   const actions = appendCell(row, '')
@@ -200,12 +237,13 @@ function rowFor(source) {
   button.textContent = source.transport === 'otlp' ? '编辑' : '查看'
   button.setAttribute('aria-label', `${button.textContent} ${source.name}`)
   button.addEventListener('click', () => {
-    if (busy) return
-    if (source.id !== base.id) {
-      if (Object.keys(draft()).length) {
-        notice.textContent = '请保存或清空草稿后切换来源。'
+    if (busy || receiver.busy) return
+    if (source.id !== base.id || receiver.active) {
+      if (Object.keys(draft()).length || receiver.active && !receiver.completed) {
+        notice.textContent = '请先完成当前操作，或点「返回来源列表」放弃草稿。'
         return
       }
+      receiver.close()
       showEditor(source)
       controls()
     }
@@ -225,15 +263,68 @@ function present(next) {
 
 async function loadSources() {
   const next = await callSource()
+  const first = !snapshot
+  const restored = receiver.resume()
   const preserve = needsReview || Boolean(snapshot && Object.keys(draft()).length)
   stale = false
+  managementExpired = false
   present(next)
-  if (!preserve) showEditor(selected())
+  const awaiting = restored.id && restored.params.get('stage') === 'register'
+  const recovered = awaiting && next.sources.find(source => source.id === restored.id && source.transport === 'otlp')
+  if (recovered) {
+    if (!receiver.active) receiver.open(recovered.id, restored.params)
+    receiver.registered(recovered.id)
+    showEditor(recovered)
+    if (!canConnect(recovered)) {
+      receiver.close()
+      showEditor(recovered)
+      notice.textContent = '请先启用来源并登记上报凭据。'
+    } else notice.textContent = '已确认原设备登记成功。请继续核对中心接收设置。'
+    byId('sources-notice').textContent = ''
+    return
+  }
+  if (receiver.active && base.id && !canConnect(selected())) {
+    receiver.close()
+    showEditor(selected())
+    byId('sources-notice').textContent = '原设备的来源状态已变更。请核对登记和凭据状态。'
+    return
+  }
+  if (!preserve) {
+    if (first && restored.open) {
+      const source = restored.id && snapshot.sources.find(item => item.id === restored.id && item.transport === 'otlp')
+      if (source && !canConnect(source)) {
+        showEditor(source)
+        notice.textContent = '请先启用来源并登记上报凭据。'
+      } else if (source || !restored.id || awaiting) {
+        receiver.open(restored.id, restored.params, Boolean(awaiting))
+        showEditor(source || newSource)
+        if (awaiting) notice.textContent = '最新列表中未查到此次登记。请重新填写名称和摘要，再手动提交。'
+        controls()
+        byId('source-title').focus()
+      } else {
+        showEditor()
+        byId('sources-notice').textContent = '已登记的来源不存在。请核对来源列表。'
+        return
+      }
+    } else showEditor(selected())
+  }
   byId('sources-notice').textContent = ''
 }
 
+function expireManagement() {
+  stale = true
+  managementExpired = true
+  byId('sources-notice').textContent = '管理会话已失效。请重新打开来源管理。'
+}
+
+async function reconcileSources() {
+  try { await loadSources() } catch (error) {
+    if (error?.cause?.status === 403) expireManagement()
+  }
+}
+
 async function refresh() {
-  if (busy) return
+  if (busy || receiver.busy) return
   confirmation = undefined
   busy = true
   controls()
@@ -241,17 +332,15 @@ async function refresh() {
   try {
     await loadSources()
   } catch (error) {
-    if (error?.cause?.status === 403) stale = true
-    byId('sources-notice').textContent = error?.cause?.status === 403
-      ? '管理会话已失效。请从用量看板重新打开来源管理。'
-      : snapshot ? '刷新失败。当前显示上次读取的来源，可重试。' : '暂时无法读取来源。请刷新重试。'
+    if (error?.cause?.status === 403) expireManagement()
+    else byId('sources-notice').textContent = snapshot ? '刷新失败。当前显示上次读取的来源，可重试。' : '暂时无法读取来源。请刷新重试。'
   } finally {
     busy = false
     controls()
   }
 }
 
-async function mutate(body) {
+async function mutate(body, receiverPatch) {
   if (busy || stale || !snapshot || conflict()) return
   const previousDraft = draft()
   confirmation = undefined
@@ -260,33 +349,39 @@ async function mutate(body) {
   notice.textContent = '正在提交来源变更…'
   try {
     const next = await callSource({ ...body, revision: baseRevision })
-    const source = body.action === 'create' ? next.sources.find(item => !snapshot.sources.some(old => old.id === item.id))
-      : next.sources.find(item => item.id === body.id)
-    if (next.revision === baseRevision || !source) throw new Error()
+    const source = next.sources.find(item => item.id === body.id)
+    if (next.revision === baseRevision || !source || (body.action === 'create' && source.transport !== 'otlp')) throw new Error()
     present(next)
+    if (body.action === 'create') receiver.registered(source.id)
     showEditor(source)
     const { rotation, ...settings } = previousDraft
     if (body.action !== 'create' && body.action !== 'update') restore(settings)
     if (rotation && body.action !== 'rotate') restore({ rotation })
     notice.textContent = successText[body.action]
     byId('source-title').focus()
+    if (receiverPatch) await receiver.finish(source.id, receiverPatch)
   } catch (error) {
     const { status, code } = error?.cause ?? {}
-    if (code === 'source_revision_conflict' || code === 'source_not_found') {
+    if (code === 'source_revision_conflict' || code === 'source_not_found' || code === 'source_id_in_use') {
       stale = true
       needsReview = true
-      try { await loadSources() } catch {}
+      await reconcileSources()
+      if (body.action === 'create' && !stale && base.id === body.id) return
       notice.textContent = stale ? '来源配置已变化。请刷新后核对，草稿已保留。'
         : '来源配置已变化。请核对最新修订，草稿已保留。'
     } else if (status === 403) {
-      stale = true
-      notice.textContent = '管理会话已失效。请从用量看板重新打开来源管理。'
+      expireManagement()
+      notice.textContent = '请使用页面顶部的链接重新打开来源管理。'
     } else if (failures.has(code)) {
       notice.textContent = failures.get(code)
     } else {
       stale = true
       needsReview = true
       notice.textContent = '提交结果待确认。请刷新列表并核对，草稿已保留。'
+      if (body.action === 'create') {
+        await reconcileSources()
+        if (!stale && !base.id) notice.textContent = '尚未查到此次登记。请核对最新来源列表后再手动提交。'
+      }
     }
   } finally {
     busy = false
@@ -326,6 +421,7 @@ function bindSubmit(target, button, submit) {
 }
 
 byId('refresh-sources').addEventListener('click', refresh)
+byId('refresh-receipt').addEventListener('click', refresh)
 bindSubmit(form, byId('save-source'), () => {
   const name = fields.name.value.trim()
   if (!name || [...name].length > 80 || /[\p{Cc}\p{Cf}]/u.test(name)) {
@@ -334,13 +430,17 @@ bindSubmit(form, byId('save-source'), () => {
     return
   }
   const enabled = fields.enabled.checked
-  if (base.id) {
+  if (receiver.active) {
+    const digest = base.id ? undefined : digestFrom(fields.digest)
+    if (!base.id && !digest) return
+    const patch = receiver.validate()
+    if (!patch) return
+    if (base.id) void receiver.finish(base.id, patch)
+    else void mutate({ action: 'create', id: receiver.beginRegistration(), name, digest, enabled: true }, patch)
+  } else if (base.id) {
     const values = draft()
     void mutate({ action: 'update', id: base.id, ...(values.name === undefined ? {} : { name }),
       ...(values.enabled === undefined ? {} : { enabled }) })
-  } else {
-    const digest = digestFrom(fields.digest)
-    if (digest) void mutate({ action: 'create', name, digest, enabled })
   }
 })
 bindSubmit(rotationForm, byId('rotate-source'), () => {
@@ -373,11 +473,27 @@ byId('confirm-action').addEventListener('click', () => {
   if (confirmation && !byId('confirm-action').disabled) void mutate(confirmation.body)
 })
 for (const field of Object.values(fields)) field.addEventListener('input', controls)
+function startWizard(source) {
+  if (busy || receiver.busy || !snapshot) return
+  if (Object.keys(draft()).length || receiver.active && !receiver.completed) {
+    notice.textContent = '请先完成当前操作，或点「返回来源列表」放弃草稿。'
+    return
+  }
+  receiver.open(source?.id)
+  showEditor(source)
+  controls()
+  byId('source-title').focus()
+}
+byId('add-source').addEventListener('click', () => startWizard())
+byId('resume-source').addEventListener('click', () => {
+  if (!byId('resume-source').hidden && !byId('resume-source').disabled) startWizard(selected())
+})
 byId('reset-source').addEventListener('click', () => {
-  if (busy || !snapshot) return
+  if (busy || receiver.busy || !snapshot) return
+  receiver.close()
   showEditor()
   controls()
-  fields.name.focus()
+  byId('add-source').focus()
 })
 byId('review-latest').addEventListener('click', () => {
   if (busy || stale || !conflict() || byId('review-latest').disabled) return
@@ -387,7 +503,7 @@ byId('review-latest').addEventListener('click', () => {
   restore(previousDraft)
   notice.textContent = '已载入最新修订。请核对草稿。'
   controls()
-  if (source && source.transport !== 'otlp') byId('source-title').focus()
+  if (source && (receiver.active || source.transport !== 'otlp')) byId('source-title').focus()
   else fields.name.focus()
 })
 void refresh()

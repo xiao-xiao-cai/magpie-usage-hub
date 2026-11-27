@@ -49,7 +49,7 @@ function readQuery(params: URLSearchParams, calendar: ReturnType<typeof createCa
   const via = params.get('via')
   if (sourceId !== null && sourceId !== 'local' && !readSourceId(sourceId)) return null
   if (model !== null && (model.length > 512 || /[\u0000-\u001f\u007f]/u.test(model))) return null
-  if (via !== null && via !== 'through' && via !== 'direct' && via !== 'session') return null
+  if (via !== null && via !== 'through' && via !== 'direct' && via !== 'session' && via !== 'conversation') return null
 
   const period = params.get('period')
   if (params.has('from') || params.has('to')) {
@@ -69,7 +69,9 @@ function dimensionFilter(query: Query) {
     conditions.push('model = ?')
     values.push(query.model)
   }
-  if (query.via !== null) {
+  if (query.via === 'conversation') {
+    conditions.push("via IN ('direct', 'session')")
+  } else if (query.via !== null) {
     conditions.push('via = ?')
     values.push(query.via)
   }

@@ -75,9 +75,8 @@ export async function runSynchronization(
         const recoveryRequired = checkpoint.phase === 'recovery_required'
         diagnostics.update({ syncPhase: checkpoint.phase, hasMore: checkpoint.hasMore, lastSyncedAt: checkpoint.lastSyncedAt,
           ...(committed ? { lastPageAt: new Date().toISOString() } : {}),
-          ready: committed || diagnostics.getStatus().ready || checkpoint.lastSyncedAt !== null,
-          phase: recoveryRequired ? 'blocked' : 'ready', retryAt: null,
-          failure: recoveryRequired ? { stage: 'source', code: 'source_recovery_required' } : null,
+          collectorPhase: recoveryRequired ? 'blocked' : 'ready', collectorRetryAt: null,
+          collectorFailure: recoveryRequired ? { stage: 'source', code: 'source_recovery_required' } : null,
         })
       })
       consecutiveFailures = 0
@@ -101,7 +100,8 @@ export async function runSynchronization(
         diagnostics.update({ syncPhase: 'paused' })
         phase = 'retrying'
       }
-      diagnostics.update({ phase, failure, retryAt: new Date(Date.now() + delay).toISOString() })
+      diagnostics.update({ collectorPhase: phase, collectorFailure: failure,
+        collectorRetryAt: new Date(Date.now() + delay).toISOString() })
       const issue = `${failure.stage}/${failure.code}`
       if (issue !== previousIssue) logRuntime({ status: phase, ...failure })
       previousIssue = issue

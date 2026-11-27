@@ -107,6 +107,45 @@ test('management serializes revisions and confirms a replacement key before prom
   }
 })
 
+test('source creation reconciles a client UUID through the management snapshot', async () => {
+  const ledger = openCenterLedger(':memory:')
+  try {
+    const endpoint = '/api/sources'
+    const manage = createSourceManagement(ledger)
+    const snapshot = async () => (await manage(request(endpoint))).json()
+    const create = (edit: object) => manage(request(endpoint, { action: 'create', name: 'Same name', digest: digest(keyA), ...edit }))
+    const initial = await snapshot()
+    for (const invalid of ['local', 'invalid', '46b0d167-eabe-7800-aa21-8109e50f55c3', null]) {
+      const rejected = await create({ revision: initial.revision, id: invalid })
+      expect(rejected.status).toBe(400)
+      expect(await rejected.json()).toEqual({ error: { code: 'invalid_source' } })
+    }
+    const id = crypto.randomUUID()
+    const first = await create({ revision: initial.revision, id })
+    expect(first.status).toBe(201)
+    await first.text()
+    const recovered = await snapshot()
+    expect(recovered.sources).toMatchObject([{ id: 'local' }, { id, name: 'Same name' }])
+    const replay = await create({ revision: initial.revision, id })
+    expect(replay.status).toBe(409)
+    expect(await replay.json()).toEqual({ error: { code: 'source_revision_conflict' } })
+    const collision = await create({ revision: recovered.revision, id, digest: digest(keyB) })
+    expect(collision.status).toBe(409)
+    expect(await collision.json()).toEqual({ error: { code: 'source_id_in_use' } })
+    expect(await snapshot()).toEqual(recovered)
+    expect(ledger.authenticateOtlp(digest(keyA))).toBe(id)
+    const secondId = crypto.randomUUID()
+    const second = await create({ revision: recovered.revision, id: secondId, digest: digest(keyB) })
+    expect(second.status).toBe(201)
+    const { sources } = await snapshot()
+    expect(sources.filter((source: { name: string }) => source.name === 'Same name').map((source: { id: string }) => source.id).sort())
+      .toEqual([id, secondId].sort())
+    expect(ledger.authenticateOtlp(digest(keyB))).toBe(secondId)
+  } finally {
+    ledger.db.close()
+  }
+})
+
 test('OTLP retries preserve the first snapshot and isolate identical span identifiers by source', () => {
   const ledger = openCenterLedger(':memory:')
   try {

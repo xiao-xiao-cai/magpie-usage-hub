@@ -16,13 +16,20 @@ test('loopback status only reports migration and ready diagnostics and rejects f
     expect(response.headers.get('cache-control')).toBe('no-store')
     expect(await response.json()).toEqual({
       schema: 'magpie-usage-hub/status-v1', loadedRevision: revision, appliedRevision: null,
-      phase: 'migration_required', role: null, syncPhase: null, ready: false, hasMore: false,
+      phase: 'migration_required', role: null, syncPhase: null, ready: false, receiver: 'off', hasMore: false,
+      collectorPhase: null, collectorFailure: null, collectorRetryAt: null,
       failure: null, lastAttemptAt: null, retryAt: null, lastPageAt: null, lastSyncedAt: null,
     })
     const write = await fetch(url, { method: 'POST' })
     expect(write.status).toBe(405)
     expect(write.headers.get('allow')).toBe('GET')
     expect((await fetch(url, { headers: { Origin: 'https://fixture-unrelated.example' } })).status).toBe(403)
+    const root = await fetch(server.url)
+    expect(await root.text()).toContain('<meta name="center-available" content="no">')
+    const options = await fetch(new URL('options.js', server.url), { headers: { Origin: 'null' } })
+    expect(options.status).toBe(200)
+    expect(options.headers.get('content-type')).toContain('text/javascript')
+    expect(await options.text()).toBe(await Bun.file(new URL('../../page/options.js', import.meta.url)).text())
     for (const path of ['dashboard/', 'api/usage', 'api/usage/rows', 'api/sources', 'push/center.sqlite']) {
       expect((await fetch(new URL(path, server.url))).status).toBe(404)
     }
@@ -97,7 +104,7 @@ test('the center dashboard serves relative assets and read-only usage on loopbac
 
 test('source management requires its management page token', async () => {
   const invoked: string[] = []
-  const server = serveDiagnostics(createDiagnostics(revision), 0, undefined, request => {
+  const server = serveDiagnostics(createDiagnostics(revision), 0, async () => Response.json({ sources: [] }), request => {
     invoked.push(new URL(request.url).pathname)
     return Response.json({ saved: true }, { status: 201 })
   })
@@ -114,6 +121,15 @@ test('source management requires its management page token', async () => {
     const token = /name="usage-admin-token" content="([a-f0-9]{64})"/.exec(await page.text())?.[1]
     if (!token) throw new Error('management page did not provide a fixture token')
     const allowed = { Origin: 'null', 'X-Magpie-Usage-Admin': token }
+    const html = await (await fetch(new URL('dashboard/', server.url))).text()
+    const queryToken = /name="usage-query-token" content="([a-f0-9]{64})"/.exec(html)?.[1]
+    if (!queryToken) throw new Error('dashboard did not provide a fixture token')
+    expect(queryToken).not.toBe(token)
+    expect((await call('api/sources', { Origin: 'null', 'X-Magpie-Usage-Admin': queryToken })).status).toBe(403)
+    expect((await call('api/usage', { Origin: 'null', 'X-Magpie-Usage-Query': token }, 'GET')).status).toBe(403)
+    const deviceAuth = { Origin: 'null', Authorization: `Bearer ${'a'.repeat(64)}` }
+    expect((await call('api/sources', deviceAuth)).status).toBe(403)
+    expect((await call('api/usage', deviceAuth, 'GET')).status).toBe(403)
 
     for (const path of ['api/sources']) {
       const preflight = await call(path, { Origin: 'null', 'Access-Control-Request-Method': 'POST' }, 'OPTIONS')

@@ -6,24 +6,25 @@
   <meta name="color-scheme" content="light dark">
   <meta name="usage-admin-token" content="__USAGE_ADMIN_TOKEN__">
   <title>来源管理 · Magpie Usage Hub</title>
-  <link rel="stylesheet" href="../dashboard/dashboard.css">
+  <link rel="stylesheet" href="../shared.css">
   <link rel="stylesheet" href="sources.css">
+  <script defer src="../options.js"></script>
+  <script defer src="../host.js"></script>
+  <script defer src="onboarding.js"></script>
   <script defer src="sources.js"></script>
 </head>
 <body>
-  <main>
-    <header>
-      <div>
-        <a href="../dashboard/">用量看板</a>
-        <h1>来源管理</h1>
-      </div>
-      <button id="refresh-sources" type="button">刷新</button>
+  <main class="workspace">
+    <header class="toolbar">
+      <div><a id="back-dashboard" href="../dashboard/">返回用量看板</a><h1>配置</h1></div>
+      <nav class="segmented" aria-label="配置页面"><span aria-current="page">来源管理</span><a id="settings-link" href="../../../settings.html">中心设置</a><a id="status-link" href="../status/">运行诊断</a></nav>
     </header>
     <p id="sources-notice" class="notice" role="status">正在读取来源…</p>
+    <p id="management-reentry" hidden><a id="resume-management" href="../?to=sources">重新打开来源管理</a></p>
 
-    <section id="sources-section" aria-labelledby="sources-heading">
-      <h2 id="sources-heading">已登记来源</h2>
-      <p id="sources-empty" class="muted" hidden>尚无来源。</p>
+    <section id="sources-section" class="panel" aria-labelledby="sources-heading">
+      <div class="toolbar"><h2 id="sources-heading">用量来源</h2><div class="controls"><button id="refresh-sources" type="button">刷新</button><button id="add-source" class="primary" type="button">添加设备</button></div></div>
+      <p id="sources-empty" class="muted" hidden>尚无已登记的来源。</p>
       <div id="sources-table" class="table-scroll" role="region" tabindex="0" aria-label="来源列表" hidden>
         <table>
           <thead>
@@ -34,38 +35,72 @@
       </div>
     </section>
 
-    <section id="editor" aria-labelledby="source-title">
-      <h2 id="source-title" tabindex="-1">添加 OTLP 来源</h2>
+    <section id="editor" class="panel" aria-labelledby="source-title" hidden>
+      <h2 id="source-title" tabindex="-1">添加设备</h2>
       <p id="source-identity" class="muted" hidden>来源 ID <code id="source-id"></code></p>
       <p id="local-source-hint" class="muted" hidden>中心本机网关在插件设置中配置。</p>
       <p id="historical-source-hint" class="muted" hidden>此来源的历史明细可在用量看板查询。</p>
       <form id="source-form" novalidate>
         <fieldset id="source-fields" class="source-fields" disabled>
-          <div class="source-field">
+          <div id="name-field" class="source-field">
             <label for="source-name">来源名称</label>
             <input id="source-name" type="text" autocomplete="off" required>
           </div>
           <div id="create-credential" class="source-field">
             <label for="source-digest">上报令牌的 SHA-256 摘要</label>
-            <input id="source-digest" type="text" maxlength="64" autocomplete="off" spellcheck="false" aria-describedby="source-digest-hint">
-            <small id="source-digest-hint" class="muted">填入 Magpie OTLP 上报令牌对应的 64 位十六进制摘要。</small>
+            <input id="source-digest" type="password" maxlength="64" autocomplete="off" spellcheck="false" aria-describedby="source-digest-hint">
+            <small id="source-digest-hint" class="muted">在要接入的 Windows 设备上生成专用令牌，只把输出的 64 位摘要粘贴到这里。</small>
           </div>
-          <label class="source-check" for="source-enabled">
+          <details id="token-guide" class="full-width"><summary>在设备上生成令牌与摘要</summary><p>在 Windows PowerShell 执行命令。保留此窗口，稍后用其中的令牌配置请求头。</p><pre><code id="token-command">$bytes = New-Object byte[] 32
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+$usageHubToken = [BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
+$sha = [Security.Cryptography.SHA256]::Create()
+try { [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($usageHubToken))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }</code></pre><button type="button" id="copy-command">复制生成命令</button></details>
+          <label id="enabled-field" class="source-check" for="source-enabled">
             <input id="source-enabled" type="checkbox" checked>
             允许来源上报
           </label>
+          <div id="receiver-summary" class="full-width" hidden><p id="saved-receiver"></p><button id="edit-receiver" type="button">更改接收设置</button></div>
+          <fieldset id="receiver-fields" class="source-fields full-width"><legend>中心 OTLP 接收</legend>
+            <div class="source-field"><label for="receiver-host">中心监听 IP</label><input id="receiver-host" autocomplete="off" spellcheck="false" placeholder="例如 192.0.2.2" required><small>直连填写中心的隧道或局域网 IP。Docker 端口映射可监听 0.0.0.0，同机反向代理可监听回环。</small></div>
+            <div class="source-field"><label for="receiver-port">监听端口</label><input id="receiver-port" type="number" min="1" max="65535" step="1" required></div>
+            <div class="source-field full-width"><label for="receiver-endpoint">设备访问的接收地址</label><input id="receiver-endpoint" type="url" autocomplete="off" spellcheck="false" placeholder="http://192.0.2.2:3494" required><small>填写 Windows 可达的 HTTP(S) 基础地址。Magpie 会自动追加 /v1/traces。</small></div>
+          </fieldset>
           <div class="source-actions controls">
-            <button id="save-source" type="submit" disabled>保存来源</button>
+            <button id="save-source" class="primary" type="submit" disabled>保存来源</button>
           </div>
         </fieldset>
       </form>
+      <p id="receiver-notice" class="notice" role="status"></p>
+      <button id="reload-receiver" type="button" hidden>重新读取中心设置</button>
+      <button id="review-receiver" type="button" hidden>采用最新设置并保留草稿</button>
+      <div id="windows-settings" hidden>
+        <h3 id="windows-title" tabindex="-1">配置 Windows Magpie</h3><p>中心接收已就绪。在设备的「设置 → 可观测性」填写下列值并开启 OTLP export。</p>
+        <dl id="windows-values" class="windows-values">
+          <dt>Collector</dt><dd>OTLP</dd>
+          <dt>OTLP endpoint</dt><dd><code id="windows-endpoint"></code> <button id="copy-endpoint" type="button">复制地址</button></dd>
+          <dt>OTLP headers</dt><dd><code>Authorization=Bearer%20&lt;本机令牌&gt;</code></dd>
+          <dt>Export metrics</dt><dd>Off</dd>
+          <dt>Request and response content</dt><dd>Metadata only</dd>
+          <dt>Trace agent conversations</dt><dd>按需开启以采集会话用量</dd>
+        </dl>
+        <button id="copy-settings" type="button">复制配置清单</button>
+        <p>在生成令牌的 PowerShell 窗口执行命令，再粘贴到 OTLP headers。</p>
+        <pre><code id="header-command">"Authorization=Bearer%20$usageHubToken" | Set-Clipboard</code></pre><button type="button" id="copy-header">复制请求头命令</button>
+        <p>在设备上发起一次新调用，再核对上报状态。</p>
+        <button id="refresh-receipt" type="button">核对上报状态</button>
+        <p id="first-receipt" class="notice" role="status"></p>
+      </div>
+      <p id="copy-notice" class="notice" role="status"></p>
+      <button id="resume-source" type="button" hidden>配置设备接入</button>
       <div id="source-credentials" class="source-tools" hidden>
         <h3>上报凭据</h3>
         <p id="credential-status" class="muted"></p>
         <form id="rotation-form" class="controls" novalidate>
           <div class="source-field">
             <label for="rotation-digest">新令牌的 SHA-256 摘要</label>
-            <input id="rotation-digest" type="text" maxlength="64" autocomplete="off" spellcheck="false">
+            <input id="rotation-digest" type="password" maxlength="64" autocomplete="off" spellcheck="false">
           </div>
           <button id="rotate-source" type="submit">登记新令牌</button>
         </form>
@@ -85,7 +120,7 @@
           <button id="cancel-action" type="button">取消</button>
         </div>
       </div>
-      <div class="controls source-tools"><button id="reset-source" type="button" hidden>返回添加 OTLP 来源</button></div>
+      <div class="controls source-tools"><button id="reset-source" type="button" hidden>返回来源列表</button></div>
       <p id="source-notice" class="notice" role="status"></p>
       <div id="revision-review" hidden>
         <p id="latest-source" class="muted"></p>
