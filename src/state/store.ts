@@ -5,8 +5,9 @@ import { isRecord } from '../center/http.ts'
 import { StateError } from './errors.ts'
 
 const windowsRenameRetryDelaysMs = [10, 25, 50, 100] as const
+type StateName = 'sender.json'
 
-export async function readStateJson(directory: string, name: 'sources.json'): Promise<unknown> {
+export async function readStateJson(directory: string, name: StateName): Promise<unknown> {
   const path = join(directory, name)
   try {
     const file = await lstat(path)
@@ -26,7 +27,7 @@ export async function readStateJson(directory: string, name: 'sources.json'): Pr
   }
 }
 
-export async function writeStateJson(directory: string, name: 'sources.json', value: object): Promise<void> {
+export async function writeStateJson(directory: string, name: StateName, value: object): Promise<void> {
   const temporary = join(directory, `.${name}.${randomUUID()}.tmp`)
   let created = false
   try {

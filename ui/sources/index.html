@@ -22,12 +22,12 @@
     <p id="sources-notice" class="notice" role="status">正在读取来源…</p>
 
     <section id="sources-section" aria-labelledby="sources-heading">
-      <h2 id="sources-heading">远程来源</h2>
-      <p id="sources-empty" class="muted" hidden>尚未登记远程来源。</p>
-      <div id="sources-table" class="table-scroll" role="region" tabindex="0" aria-label="远程来源列表" hidden>
+      <h2 id="sources-heading">已登记来源</h2>
+      <p id="sources-empty" class="muted" hidden>尚无来源。</p>
+      <div id="sources-table" class="table-scroll" role="region" tabindex="0" aria-label="来源列表" hidden>
         <table>
           <thead>
-            <tr><th scope="col">来源</th><th scope="col">网关地址</th><th scope="col">状态</th><th scope="col">只读 Key</th><th scope="col">操作</th></tr>
+            <tr><th scope="col">来源</th><th scope="col">同步状态</th><th scope="col">最近联系</th><th scope="col">上报凭据</th><th scope="col">操作</th></tr>
           </thead>
           <tbody id="sources-rows"></tbody>
         </table>
@@ -35,34 +35,56 @@
     </section>
 
     <section id="editor" aria-labelledby="source-title">
-      <h2 id="source-title">添加来源</h2>
-      <p class="muted">填写远程 Magpie 网关根地址和该实例的专用只读 Key。中心本机网关在插件设置中配置。</p>
-      <form id="source-form">
+      <h2 id="source-title" tabindex="-1">添加来源</h2>
+      <p id="source-identity" class="muted" hidden>在来源插件填写此 ID <code id="source-id"></code></p>
+      <p id="local-source-hint" class="muted" hidden>中心本机网关在插件设置中配置。</p>
+      <form id="source-form" novalidate>
         <fieldset id="source-fields" class="source-fields" disabled>
           <div class="source-field">
             <label for="source-name">来源名称</label>
-            <input id="source-name" type="text" maxlength="80" autocomplete="off" required>
+            <input id="source-name" type="text" autocomplete="off" required>
           </div>
-          <div class="source-field">
-            <label for="source-gateway">网关根地址</label>
-            <input id="source-gateway" type="url" maxlength="512" placeholder="https://gateway.example.com" autocomplete="off" spellcheck="false" required>
-          </div>
-          <div class="source-field">
-            <label for="source-key">专用只读 Key</label>
-            <input id="source-key" type="password" maxlength="512" autocomplete="new-password" spellcheck="false" aria-describedby="source-key-hint" required>
-            <small id="source-key-hint" class="muted">输入后先测试连接。</small>
+          <div id="create-credential" class="source-field">
+            <label for="source-digest">令牌文件的 SHA-256 摘要</label>
+            <input id="source-digest" type="text" maxlength="64" autocomplete="off" spellcheck="false" aria-describedby="source-digest-hint">
+            <small id="source-digest-hint" class="muted">填入来源本机对令牌文件计算的 64 位十六进制摘要。</small>
           </div>
           <label class="source-check" for="source-enabled">
             <input id="source-enabled" type="checkbox" checked>
-            启用查询
+            允许来源同步
           </label>
           <div class="source-actions controls">
-            <button id="test-source" type="button">测试连接</button>
             <button id="save-source" type="submit" disabled>保存来源</button>
-            <button id="reset-source" type="button" hidden>清空草稿</button>
           </div>
         </fieldset>
       </form>
+      <div id="source-credentials" class="source-tools" hidden>
+        <h3>上报凭据</h3>
+        <p id="credential-status" class="muted"></p>
+        <form id="rotation-form" class="controls" novalidate>
+          <div class="source-field">
+            <label for="rotation-digest">新令牌文件的 SHA-256 摘要</label>
+            <input id="rotation-digest" type="text" maxlength="64" autocomplete="off" spellcheck="false">
+          </div>
+          <button id="rotate-source" type="submit">登记新令牌</button>
+        </form>
+        <div class="controls source-actions">
+          <button id="revoke-current" type="button" hidden>撤销当前令牌</button>
+          <button id="revoke-pending" type="button" hidden>撤销待用令牌</button>
+          <button id="revoke-all" type="button" hidden>撤销全部令牌</button>
+        </div>
+      </div>
+      <div id="recovery-tools" class="controls source-tools" hidden>
+        <button id="rebuild-source" type="button">确认同源重建</button>
+      </div>
+      <div id="action-confirmation" class="source-tools confirmation" role="group" aria-labelledby="confirmation-text" hidden>
+        <p id="confirmation-text"></p>
+        <div class="controls">
+          <button id="confirm-action" type="button">确认</button>
+          <button id="cancel-action" type="button">取消</button>
+        </div>
+      </div>
+      <div class="controls source-tools"><button id="reset-source" type="button" hidden>返回添加来源</button></div>
       <p id="source-notice" class="notice" role="status"></p>
       <div id="revision-review" hidden>
         <p id="latest-source" class="muted"></p>

@@ -55,25 +55,32 @@
       else inputs[name].value = value
     }
     dirtyFields = readDirtyFields()
+    renderRole()
+  }
+
+  function renderRole() {
+    const sender = inputs.role.value === 'sender'
+    element('sender-fields').hidden = !sender
+    element('center-fields').hidden = sender
   }
 
   function updateDiagnosticLink() {
     const link = element('diagnostic-link')
     const guide = element('diagnostic-guide')
     const revision = options.revision(saved?.configRevision)
-    const enabled = options.pullEnabled(saved)
+    const center = options.enabledRole(saved) === 'center'
     element('revision-value').textContent = revision
     element('settings-revision').hidden = !revision
     const href = saved && options.pageServiceLink(window.magpie?.service, window.location.href, saved)
     link.hidden = !href
     if (!href) {
       link.removeAttribute('href')
-      guide.textContent = '在 Magpie Web 的插件页打开用量看板。'
+      guide.textContent = '在 Magpie Web 的插件页打开后台诊断。'
       return
     }
     link.href = href
-    link.textContent = enabled ? '打开用量看板' : '打开后台诊断'
-    guide.textContent = enabled ? '从用量看板查看本机用量或管理远程来源。' : '启用中心只读查询并保存后，即可打开用量看板。'
+    link.textContent = center ? '打开用量看板' : '打开后台诊断'
+    guide.textContent = center ? '从看板查询用量和管理上报来源。' : '在后台诊断查看配置采用和同步状态。'
   }
 
   function render(state) {
@@ -81,7 +88,7 @@
     const { result, differences, refreshing, writing, pending } = state
     if (state.saved && (state.saved !== saved || result === 'confirmed')) renderSettings(state.saved, result === 'confirmed')
     updateDiagnosticLink()
-    element('migration-guide').hidden = !(saved?.enabled === true && saved.collectionMode !== 'pull')
+    element('migration-guide').hidden = !(saved?.enabled === true && saved.collectionMode !== 'push')
     const busy = writing || refreshing
     element('reload-options').disabled = writing
     element('settings-fields').disabled = !saved || writing || pending
@@ -102,7 +109,7 @@
     if (result === 'writing') message('正在提交并核对读回值…')
     if (result === 'loaded') message(dirtyFields.size ? '设置已刷新。草稿已保留。' : '')
     if (result === 'rebased') message(dirtyFields.size ? '已读取最新设置。请核对保留的草稿。' : '已读取最新设置。')
-    if (result === 'confirmed') message('中心设置已保存。后台采用状态见 Magpie Web 的后台诊断。')
+    if (result === 'confirmed') message('设置已保存。可在后台诊断核对采用的修订。')
   }
 
   const session = options.createSession({
@@ -119,6 +126,7 @@
   element('rebase-options').addEventListener('click', session.adoptLatest)
   for (const input of Object.values(inputs)) {
     input.addEventListener('input', () => {
+      if (input === inputs.role) renderRole()
       dirtyFields = readDirtyFields()
       if (!snapshot.differences && !snapshot.pending) message(dirtyFields.size ? '有未保存的更改。' : '')
     })
@@ -132,9 +140,9 @@
     event.preventDefault()
     if (save.disabled) return
     try {
-      void session.submit(options.settingsPatch({
-        enabled: inputs.enabled.checked,
-        centerGatewayUrl: inputs.centerGatewayUrl.value,
+      const draft = Object.fromEntries(Object.keys(inputs).map(name => [name, inputValue(name)]))
+      void session.submit(options.settingsPatch({ ...draft,
+        ingestPort: inputs.ingestPort.valueAsNumber,
         requestTimeoutSec: inputs.requestTimeoutSec.valueAsNumber,
       }))
     } catch (error) {

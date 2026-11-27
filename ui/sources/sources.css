@@ -26,6 +26,12 @@
 .source-check { align-self: start; display: flex; align-items: center; gap: .45rem; min-height: 2.15rem; margin-block-start: 1.7rem; }
 .source-check input { margin: 0; accent-color: var(--magpie-accent, AccentColor); }
 .source-actions { grid-column: 1 / -1; }
+.source-tools { margin-block-start: .8rem; }
+.source-tools h3 { margin: 0; font-size: 1rem; }
+.source-tools .source-actions { margin-top: .55rem; }
+#rotation-form { align-items: end; }
+.confirmation { padding: .65rem .8rem; border: 1px solid var(--line); border-radius: .35rem; }
+.confirmation p { margin-top: 0; }
 #sources-table table { min-width: 35rem; }
 #sources-table th[scope="row"], #sources-table td, #latest-source { overflow-wrap: anywhere; }
 #sources-table th[scope="row"], #sources-table td { max-inline-size: 21rem; }

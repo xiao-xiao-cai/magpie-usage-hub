@@ -16,6 +16,7 @@ p { margin: .65rem 0 0; }
 section { border-block-start: 1px solid var(--line); margin-top: 1rem; padding-top: .9rem; }
 dl { margin: 0; }
 dl div { display: grid; grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr); gap: .6rem; padding: .22rem 0; }
+dl [hidden] { display: none; }
 dt, .muted { color: GrayText; }
 dd { margin: 0; overflow-wrap: anywhere; }
 .revision { font: .82rem/1.55 ui-monospace, Consolas, monospace; }

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
+  <meta name="usage-query-token" content="__USAGE_QUERY_TOKEN__">
   <title>用量看板 · Magpie Usage Hub</title>
   <link rel="stylesheet" href="dashboard.css">
   <script defer src="dashboard.js"></script>
@@ -11,40 +12,122 @@
 <body>
   <main>
     <header>
-      <div>
-        <nav class="controls" aria-label="中心页面">
-          <a href="../sources/">来源管理</a>
-          <a href="../">后台诊断</a>
-        </nav>
-        <h1>用量看板</h1>
-      </div>
-      <div class="controls">
+      <h1>用量看板</h1>
+      <nav class="controls" aria-label="中心页面">
+        <a href="../sources/">来源管理</a>
+        <a href="../">后台诊断</a>
+      </nav>
+    </header>
+    <form id="filters" class="filters" novalidate aria-label="用量筛选">
+      <div class="filter-field">
         <label for="period">统计周期</label>
         <select id="period">
           <option value="today">今天</option>
           <option value="7d" selected>近 7 天</option>
           <option value="30d">近 30 天</option>
+          <option value="custom">自定义起止</option>
         </select>
-        <button id="refresh" type="button">刷新</button>
       </div>
-    </header>
+      <div class="filter-field">
+        <label for="source">来源</label>
+        <select id="source"><option value="">全部来源</option></select>
+      </div>
+      <div class="filter-field">
+        <label for="via">用量分项</label>
+        <select id="via">
+          <option value="">全部分项</option>
+          <option value="through">经网关</option>
+          <option value="direct">直连</option>
+        </select>
+      </div>
+      <div class="filter-field">
+        <label for="model">模型</label>
+        <select id="model"><option value="">全部模型</option></select>
+      </div>
+      <div class="filter-field">
+        <label for="bucket">趋势粒度</label>
+        <select id="bucket">
+          <option value="hour">小时</option>
+          <option value="day" selected>日</option>
+          <option value="">关闭趋势</option>
+        </select>
+      </div>
+      <button id="refresh" type="submit">查询</button>
+      <div id="custom-range" class="custom-range" hidden>
+        <div class="filter-field">
+          <label for="from">开始时间</label>
+          <input id="from" type="text" maxlength="40" placeholder="2026-11-27T08:00:00+08:00" autocomplete="off" spellcheck="false" aria-describedby="range-hint">
+        </div>
+        <div class="filter-field">
+          <label for="to">结束时间</label>
+          <input id="to" type="text" maxlength="40" placeholder="2026-11-27T09:00:00+08:00" autocomplete="off" spellcheck="false" aria-describedby="range-hint">
+        </div>
+        <small id="range-hint" class="muted">含开始、不含结束。请在时间后填写时区偏移（如 +08:00）或 Z。</small>
+      </div>
+    </form>
     <p id="notice" class="notice" role="status">正在读取用量…</p>
-    <section id="results" aria-labelledby="summary-heading" aria-busy="true" hidden>
-      <h2 id="summary-heading">分来源汇总</h2>
-      <p class="muted">周期按各来源的原生日历统计。</p>
-      <div class="table-scroll" role="region" tabindex="0" aria-label="分来源用量汇总表">
-        <table class="summary">
-          <thead>
-            <tr>
-              <th scope="col">来源</th><th scope="col">统计起点</th><th scope="col">请求数</th>
-              <th scope="col">输入 / 输出 Token</th><th scope="col">缓存读 / 写 Token</th>
-              <th scope="col">已计价估算费用 (USD)</th><th scope="col">缺价记录</th><th scope="col">本次查询</th>
-            </tr>
-          </thead>
-          <tbody id="summary-rows"></tbody>
-        </table>
-      </div>
-    </section>
+    <div id="results" aria-busy="true" hidden>
+      <section aria-labelledby="summary-heading">
+        <h2 id="summary-heading">分来源汇总</h2>
+        <p id="range-label" class="muted"></p>
+        <div class="table-scroll" role="region" tabindex="0" aria-label="分来源用量汇总表">
+          <table class="summary">
+            <thead>
+              <tr>
+                <th scope="col">来源</th><th scope="col">同步状态</th><th scope="col">已同步调用范围</th>
+                <th scope="col">请求数</th><th scope="col">输入 / 输出 Token</th><th scope="col">缓存读 / 写 Token</th>
+                <th scope="col">已计价估算费用（USD）</th><th scope="col">缺价记录</th>
+              </tr>
+            </thead>
+            <tbody id="summary-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="trend" aria-labelledby="trend-heading" hidden>
+        <h2 id="trend-heading">用量趋势</h2>
+        <div id="trends"></div>
+      </section>
+
+      <section aria-labelledby="models-heading">
+        <h2 id="models-heading">模型分布</h2>
+        <p id="models-empty" class="muted" hidden>此查询没有可显示的模型。</p>
+        <div id="models-table" class="table-scroll" role="region" tabindex="0" aria-label="模型分布表" hidden>
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">模型</th><th scope="col">来源</th><th scope="col">请求数</th>
+                <th scope="col">输入 / 输出 Token</th><th scope="col">缓存读 / 写 Token</th>
+                <th scope="col">已计价估算费用（USD）</th><th scope="col">缺价记录</th>
+              </tr>
+            </thead>
+            <tbody id="model-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="rows-section" aria-labelledby="rows-heading">
+        <h2 id="rows-heading">请求明细</h2>
+        <p id="rows-notice" class="notice" role="status"></p>
+        <div id="rows-table" class="table-scroll" role="region" tabindex="0" aria-label="请求明细表" hidden>
+          <table class="rows">
+            <thead>
+              <tr>
+                <th scope="col">调用时间</th><th scope="col">来源</th><th scope="col">模型</th><th scope="col">分项</th>
+                <th scope="col">输入 / 输出 Token</th><th scope="col">缓存读 / 写 Token</th><th scope="col">推理 Token</th>
+                <th scope="col">估算费用（USD）</th><th scope="col">HTTP 状态</th><th scope="col">用时（毫秒）</th>
+              </tr>
+            </thead>
+            <tbody id="detail-rows"></tbody>
+          </table>
+        </div>
+        <div id="row-pages" class="controls" aria-label="请求明细分页" hidden>
+          <button id="previous-rows" type="button">上一页</button>
+          <span id="current-page" class="muted"></span>
+          <button id="next-rows" type="button">下一页</button>
+        </div>
+      </section>
+    </div>
   </main>
 </body>
 </html>

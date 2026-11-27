@@ -65,11 +65,12 @@
   font-weight: 600;
 }
 
-.field > input {
+.field > input, .field > select {
   min-width: 0;
   min-height: 34px;
   box-sizing: border-box;
   background: var(--magpie-bg, Field);
+  color: var(--magpie-fg, FieldText);
 }
 
 #migration-guide { margin: 0 0 14px; }

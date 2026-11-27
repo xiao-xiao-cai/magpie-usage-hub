@@ -1,140 +1,164 @@
 import { expect, test } from 'bun:test'
 import { createDashboard } from '../../src/center/dashboard.ts'
+import { openCenterLedger, type CenterLedger } from '../../src/center/ledger.ts'
+import { createCalendar, readTimeZone } from '../../src/center/time.ts'
+import type { UsageRow } from '../../src/sync/protocol.ts'
 
-const dashboardUrl = new URL('http://127.0.0.1/api/usage')
-const zero = { calls: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, cost: 0, unpriced: 0 }
-const meta = { rows: [{ t: '2000-01-01', account: 'fixture-account', rid: 'fixture-record' }], total: 100 }
-const localSince = '2026-11-21T00:00:00Z'
-const remoteSince = '2026-11-21T00:00:00+08:00'
+const window = { from: '2026-11-01T04:00:00Z', to: '2026-11-02T05:00:00Z' }
+const windowInside = '2026-11-01T01:05:00-04:00'
 
-test('one request per source combines native calls and tokens and retains separate native windows', async () => {
-  const observed: { path: string; authorization: string | null }[] = []
-  const gateway = Bun.serve({
-    hostname: '127.0.0.1', port: 0,
-    fetch(request) {
-      const url = new URL(request.url)
-      const authorization = request.headers.get('Authorization')
-      observed.push({ path: url.pathname + url.search, authorization })
-      const period = url.searchParams.get('period')
-      if (authorization) return Response.json({
-        ...meta, period, series: [{ time: remoteSince }], through: { ...zero, calls: 4, unpriced: 4 }, direct: zero,
-        reported: [null],
-      })
-      return Response.json({
-        ...meta, period, series: [{ time: localSince }],
-        through: { calls: 3, input: 20, output: 10, cache_read: 8, cache_write: 6, cost: 0.25, unpriced: 1 },
-        direct: { calls: 2, input: 4, output: 2, cache_read: 3, cache_write: 4, cost: 0.125, unpriced: 1 },
-        reported: { ...zero, calls: 90 },
-      })
-    },
-  })
-  const remote = { name: 'Windows 合成来源', gatewayUrl: gateway.url.href, key: 'fixture-read-key', enabled: true }
-  const dashboard = createDashboard(gateway.url, 1_000, () => [remote, { ...remote, name: '暂停', enabled: false }])
+function row(seq: number, t: string, values: Partial<UsageRow> = {}): UsageRow {
+  return { rowKey: seq.toString(16).padStart(64, 'f'), seq, t, via: 'through', model: 'sample', handedOn: false,
+    input: 10, output: 2, cacheRead: 3, cacheWrite: 4, reasoning: 1, cacheUnknown: false,
+    cost: 0.125, status: 200, durationMs: 250, ...values }
+}
+
+function commit(ledger: CenterLedger, id: string, upserts: UsageRow[], hasMore = false) {
+  const { revision } = ledger.checkpoint(id)
+  return ledger.commit({ sourceId: id, revision, nextCursor: `fixture-${revision}`, hasMore, upserts, removals: [] })
+}
+
+function register(ledger: CenterLedger) {
+  const { sources } = ledger.editSource({ action: 'create', revision: ledger.managementSnapshot().revision,
+    name: 'Windows 模拟来源', digest: 'a'.repeat(64), enabled: true })
+  return sources.find(source => !source.isLocal)!.id
+}
+
+function request(dashboard: ReturnType<typeof createDashboard>, path: string, params: Record<string, string>) {
+  return dashboard(new URL(`http://127.0.0.1/api/${path}?${new URLSearchParams(params)}`), new AbortController().signal)
+}
+
+test('queries active source histories separately with native request and cost accounting', async () => {
+  const ledger = openCenterLedger(':memory:')
   try {
-    const response = await dashboard(dashboardUrl)
-    const serialized = await response.text()
-    expect(JSON.parse(serialized)).toEqual({
-      schema: 'magpie-usage-hub/usage-v2', period: '7d', sources: [
-        { name: '中心本机', status: 'ok', since: localSince, checkedAt: expect.any(String), failure: null,
-          totals: { calls: 5, input: 24, output: 12, cacheRead: 11, cacheWrite: 10, cost: 0.375, unpriced: 2 } },
-        { name: remote.name, status: 'ok', since: remoteSince, checkedAt: expect.any(String), failure: null,
-          totals: { calls: 4, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unpriced: 4 } },
-        { name: '暂停', status: 'paused', since: null, totals: null, checkedAt: null, failure: null },
-      ],
-    })
-    const path = '/v1/magpie/usage/requests?computer=this&period=7d&offset=0&limit=1'
-    expect(observed).toHaveLength(2)
-    expect(observed).toContainEqual({ path, authorization: null })
-    expect(observed).toContainEqual({ path, authorization: 'Bearer fixture-read-key' })
-    expect(serialized).not.toContain('fixture-')
-    expect(serialized).not.toContain(gateway.url.origin)
-    expect((await dashboard(new URL('?period=all', dashboardUrl))).status).toBe(400)
-    expect(observed).toHaveLength(2)
+    const windows = register(ledger)
+    commit(ledger, 'local', [
+      row(1, window.from),
+      row(2, windowInside, { handedOn: true, cost: 0 }),
+      row(3, '2026-11-01T01:15:00-05:00', { via: 'direct', model: 'other', cost: null, cacheUnknown: true, status: null }),
+      row(4, '2026-11-01T01:15:00-05:00', { via: 'direct', model: 'other', input: 0, output: 0, cost: null }),
+      row(5, window.to),
+    ])
+    commit(ledger, windows, [row(1, windowInside, { input: 42 })])
+    ledger.db.run('UPDATE sources SET last_seen_at = ? WHERE id = ?', ['2026-01-01T00:00:00Z', windows])
+    const dashboard = createDashboard(ledger, 'America/New_York')
+    const response = await request(dashboard, 'usage', { ...window, bucket: 'hour' })
+    expect(response.status).toBe(200)
+    const result = await response.json()
+    expect(result.range).toEqual({ from: '2026-11-01T04:00:00.000Z', to: '2026-11-02T05:00:00.000Z', timeZone: 'America/New_York' })
+    const [local, remote] = result.sources
+    expect(local.totals).toEqual({ calls: 3, input: 30, output: 6, cacheRead: 12, cacheWrite: 16,
+      reasoning: 4, cost: 0.125, unpriced: 1, cacheUnknownCalls: 1 })
+    expect(local.buckets).toHaveLength(25)
+    expect(local.buckets[1]).toMatchObject({ from: '2026-11-01T01:00:00.000-04:00', to: '2026-11-01T01:00:00.000-05:00', totals: { calls: 0, input: 10 } })
+    expect(local.buckets[2]).toMatchObject({ from: '2026-11-01T01:00:00.000-05:00', to: '2026-11-01T02:00:00.000-05:00', totals: { calls: 2, input: 10 } })
+    expect(local.models).toMatchObject([{ model: 'other', totals: { calls: 2 } }, { model: 'sample', totals: { calls: 1 } }])
+    expect(local.coverage).toEqual({ from: result.range.from, to: result.range.to })
+    expect(remote).toMatchObject({ id: windows, freshness: 'offline', totals: { calls: 1, input: 42 } })
+    expect(remote).not.toHaveProperty('activeGeneration')
+    expect(remote).not.toHaveProperty('credentials')
+    ledger.db.run('UPDATE sources SET last_seen_at = ?, last_page_at = ? WHERE id = ?',
+      [new Date().toISOString(), '2026-01-01T00:00:00Z', windows])
+    const stalled = await (await request(dashboard, 'usage', { ...window, sourceId: windows })).json()
+    expect(stalled.sources[0]).toMatchObject({ freshness: 'stalled', totals: { calls: 1, input: 42 } })
+    const filtered = await (await request(dashboard, 'usage', { ...window, sourceId: 'local', via: 'direct', model: 'other' })).json()
+    expect(filtered.sources).toHaveLength(1)
+    expect(filtered.sources[0]).toMatchObject({ id: 'local', totals: { calls: 2, input: 10, unpriced: 1 } })
   } finally {
-    await gateway.stop(true)
+    ledger.db.close()
   }
 })
 
-test('sources isolate timeout, invalid data, redirect, authentication, and upstream failures', async () => {
-  const outcomes = [
-    ['401', 'unauthorized', 401], ['403', 'forbidden', 403], ['503', 'unavailable', 503], ['redirect', 'redirect', 302],
-    ['slow', 'timeout'], ['json', 'incompatible_response'], ['period', 'incompatible_response'],
-    ['fraction', 'incompatible_response'], ['cost', 'incompatible_response'], ['overflow', 'incompatible_response'],
-    ['window', 'incompatible_response'], ['large', 'incompatible_response'],
-  ] as const
-  let redirected = 0
-  const target = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch() { redirected++; return new Response() } })
-  const gateway = Bun.serve({
-    hostname: '127.0.0.1', port: 0,
-    async fetch(request) {
-      const credential = request.headers.get('authorization')?.slice('Bearer '.length)
-      const payload = { period: '30d', through: zero, direct: zero, series: [] }
-      if (credential === 'redirect') return Response.redirect(target.url, 302)
-      if (credential === '401' || credential === '403' || credential === '503') {
-        return new Response('fixture-sensitive-response', { status: Number(credential) })
-      }
-      if (credential === 'slow') {
-        return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('{')) } }))
-      }
-      if (credential === 'json') return new Response('{"fixture-error"')
-      if (credential === 'period') return Response.json({ ...payload, period: '7d' })
-      if (credential === 'fraction') return Response.json({ ...payload, through: { ...zero, calls: 0.5 } })
-      if (credential === 'cost') return Response.json({ ...payload, direct: { ...zero, cost: -1 } })
-      if (credential === 'overflow') return Response.json({ ...payload, through: { ...zero, input: Number.MAX_SAFE_INTEGER },
-        direct: { ...zero, input: 1 } })
-      if (credential === 'window') return Response.json({ ...payload, series: [{ time: 'fixture-local-time' }] })
-      if (credential === 'large') return new Response(new ReadableStream({
-        start(controller) {
-          controller.enqueue(new Uint8Array(600_000).fill(32))
-          controller.enqueue(new Uint8Array(600_000).fill(32))
-          controller.close()
-        },
-      }))
-      return Response.json(payload)
-    },
-  })
-  const dashboard = createDashboard(gateway.url, 200, () => outcomes.map(([name]) => ({
-    name, gatewayUrl: gateway.url.href, key: name, enabled: true,
-  })))
+test('pages ties across sources in order with a private cursor scoped to the selection', async () => {
+  const ledger = openCenterLedger(':memory:')
   try {
-    const response = await dashboard(new URL('?period=30d', dashboardUrl))
-    const serialized = await response.text()
-    const { sources } = JSON.parse(serialized)
-    expect(sources[0]).toMatchObject({ status: 'ok', since: null, totals: { calls: 0, cost: 0, unpriced: 0 } })
-    expect(sources.slice(1)).toEqual(outcomes.map(([name, code, httpStatus]) => ({
-      name, status: 'unavailable', checkedAt: expect.any(String), since: null, totals: null,
-      failure: { code, ...(httpStatus === undefined ? {} : { httpStatus }) },
-    })))
-    expect(serialized).not.toContain('fixture-')
-    expect(redirected).toBe(0)
+    const windows = register(ledger)
+    commit(ledger, 'local', [row(1, windowInside), row(2, windowInside, { model: 'second' })])
+    commit(ledger, windows, [row(1, windowInside, { model: 'remote' })])
+    const dashboard = createDashboard(ledger, 'UTC')
+    const fetchPage = async (params: Record<string, string> = {}) =>
+      (await request(dashboard, 'usage/rows', { ...window, limit: '1', ...params })).json()
+    const first = await fetchPage()
+    const second = await fetchPage({ page: first.nextPage })
+    const third = await fetchPage({ page: second.nextPage })
+    expect([first, second, third].map(result => result.rows[0].model)).toEqual(['second', 'sample', 'remote'])
+    expect(third.nextPage).toBe(null)
+    expect(first.rows[0]).toMatchObject({ sourceId: 'local', t: windowInside, handedOn: false, status: 200, durationMs: 250 })
+    expect(first.rows[0]).not.toHaveProperty('rowKey')
+    expect(first.rows[0]).not.toHaveProperty('timeMs')
+    expect(Buffer.from(first.nextPage, 'base64url').toString()).not.toContain(row(2, windowInside).rowKey)
+    expect(await fetchPage({ model: 'second', page: first.nextPage })).toEqual({ error: { code: 'invalid_page' } })
+    expect(await fetchPage({ page: 'a'.repeat(72) })).toEqual({ error: { code: 'invalid_page' } })
   } finally {
-    await Promise.all([gateway.stop(true), target.stop(true)])
+    ledger.db.close()
   }
 })
 
-test('dashboard overlaps at most four sources in one refresh', async () => {
-  let active = 0
-  let peak = 0
-  let requests = 0
-  const gateway = Bun.serve({
-    hostname: '127.0.0.1', port: 0,
-    async fetch() {
-      requests++
-      peak = Math.max(peak, ++active)
-      await Bun.sleep(35)
-      active--
-      return Response.json({ period: 'today', since: '2026-11-27T00:00:00+02:00', through: zero, direct: zero })
-    },
-  })
-  const dashboard = createDashboard(gateway.url, 1_000, () => Array.from({ length: 7 }, (_, index) => ({
-    name: `来源 ${index}`, gatewayUrl: gateway.url.href, key: 'fixture-key', enabled: true,
-  })))
+test('keeps prior history visible during rebuild and switches to verified rows with a gap', async () => {
+  const ledger = openCenterLedger(':memory:')
   try {
-    const response = await dashboard(new URL('?period=today', dashboardUrl))
-    expect((await response.json()).sources).toHaveLength(8)
-    expect(requests).toBe(8)
-    expect(peak).toBe(4)
+    const original = row(1, windowInside)
+    commit(ledger, 'local', [original])
+    ledger.recover({ sourceId: 'local', revision: ledger.checkpoint('local').revision, reason: 'cursor_expired' })
+    commit(ledger, 'local', [row(1, window.from, { rowKey: 'a'.repeat(64), model: 'new', input: 3 })], true)
+    const dashboard = createDashboard(ledger, 'UTC')
+    const during = await (await request(dashboard, 'usage', window)).json()
+    expect(during.sources[0]).toMatchObject({ freshness: 'rebuilding', hasPublishedData: true, totals: { input: 10 } })
+    const duringRows = await (await request(dashboard, 'usage/rows', window)).json()
+    expect(duringRows.rows).toHaveLength(1)
+    expect(duringRows.rows[0].model).toBe(original.model)
+    commit(ledger, 'local', [])
+    const after = await (await request(dashboard, 'usage', window)).json()
+    expect(after.sources[0]).toMatchObject({ freshness: 'current', gap: { missingRows: 1 }, totals: { input: 3 } })
+    const afterRows = await (await request(dashboard, 'usage/rows', window)).json()
+    expect(afterRows.rows).toHaveLength(1)
+    expect(afterRows.rows[0].model).toBe('new')
   } finally {
-    await gateway.stop(true)
+    ledger.db.close()
   }
+})
+
+test('validates offset timestamps and separates trend limits from historical summaries', async () => {
+  const ledger = openCenterLedger(':memory:')
+  try {
+    const dashboard = createDashboard(ledger, 'Asia/Shanghai')
+    const outcomes = [
+      { from: '2026-02-30T04:00:00Z', to: window.to },
+      { from: '2026-11-01T04:00:00', to: window.to },
+      { from: '2026-11-01T04:00:00.0001Z', to: window.to },
+      { ...window, period: '7d' },
+      { ...window, via: 'reported' },
+    ]
+    for (const params of outcomes) expect((await request(dashboard, 'usage', params as Record<string, string>)).status).toBe(400)
+    const wide = { from: '2026-01-01T00:00:00+08:00', to: window.to }
+    const trend = await request(dashboard, 'usage', { ...wide, bucket: 'hour' })
+    expect(trend.status).toBe(400)
+    expect(await trend.json()).toEqual({ error: { code: 'bucket_range_too_large' } })
+    const summary = await (await request(dashboard, 'usage', wide)).json()
+    expect(summary.sources[0]).toMatchObject({ freshness: 'new', hasPublishedData: false, totals: { calls: 0 }, buckets: [] })
+    expect((await request(dashboard, 'usage/rows', { ...wide, limit: '101' })).status).toBe(400)
+  } finally {
+    ledger.db.close()
+  }
+})
+
+test('calendar periods use local midnight and trend buckets track hour and date changes', () => {
+  expect(readTimeZone('+05:30')).toBe(null)
+  expect(readTimeZone('Not/AZone')).toBe(null)
+  expect(readTimeZone('UTC')).toBe('UTC')
+  const kolkata = createCalendar('Asia/Kolkata')
+  const now = Date.parse('2026-01-01T21:00:00Z')
+  expect(kolkata.period('today', now)).toEqual({ from: Date.parse('2026-01-01T18:30:00Z'), to: now })
+  expect(kolkata.period('7d', now)).toEqual({ from: Date.parse('2025-12-26T18:30:00Z'), to: now })
+  const newYork = createCalendar('America/New_York')
+  const springDay = { from: Date.parse('2026-03-08T05:00:00Z'), to: Date.parse('2026-03-09T04:00:00Z') }
+  expect(newYork.buckets(springDay, 'day')).toEqual([springDay])
+  expect(newYork.buckets(springDay, 'hour')).toHaveLength(23)
+  const lordHowe = createCalendar('Australia/Lord_Howe')
+  const halfHourChange = { from: Date.parse('2026-04-04T14:00:00Z'), to: Date.parse('2026-04-04T16:30:00Z') }
+  expect(lordHowe.buckets(halfHourChange, 'hour')?.map(({ from, to }) => [lordHowe.format(from), lordHowe.format(to)])).toEqual([
+    ['2026-04-05T01:00:00.000+11:00', '2026-04-05T01:30:00.000+10:30'],
+    ['2026-04-05T01:30:00.000+10:30', '2026-04-05T02:00:00.000+10:30'],
+    ['2026-04-05T02:00:00.000+10:30', '2026-04-05T03:00:00.000+10:30'],
+  ])
 })

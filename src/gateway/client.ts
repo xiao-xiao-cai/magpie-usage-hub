@@ -1,10 +1,11 @@
 import { isRecord, readBoundedJson } from '../center/http.ts'
+import { pageLimit, readCursorFailure, type CursorFailure } from '../sync/protocol.ts'
 import { requestDirect } from './direct.ts'
 
 const maxResponseBytes = 1_048_576
 
 type GatewayFailureCode = 'timeout' | 'unavailable' | 'incompatible_response' | 'unauthorized' | 'forbidden'
-  | 'redirect' | 'restricted_key' | 'invalid_gateway_identity' | 'center_owner_mismatch'
+  | 'redirect' | 'rate_limited' | 'response_too_large' | 'invalid_gateway_identity' | 'center_owner_mismatch' | CursorFailure
 
 export class GatewayFailure extends Error {
   constructor(readonly code: GatewayFailureCode, readonly httpStatus?: number) {
@@ -12,12 +13,10 @@ export class GatewayFailure extends Error {
   }
 }
 
-export async function readGatewayJson(url: URL, signal: AbortSignal, key?: string): Promise<unknown> {
+async function readGatewayJson(url: URL, signal: AbortSignal): Promise<unknown> {
   let response: Response
   try {
-    response = await requestDirect(url, {
-      method: 'GET', ...(key === undefined ? {} : { headers: { Authorization: `Bearer ${key}` } }),
-    }, signal)
+    response = await requestDirect(url, { method: 'GET' }, signal)
   } catch {
     throw new GatewayFailure(signal.aborted ? 'timeout' : 'unavailable')
   }
@@ -25,24 +24,36 @@ export async function readGatewayJson(url: URL, signal: AbortSignal, key?: strin
   if (response.ok) {
     try {
       return await readBoundedJson(response, maxResponseBytes)
-    } catch {
-      throw new GatewayFailure(signal.aborted ? 'timeout' : 'incompatible_response')
+    } catch (error) {
+      throw new GatewayFailure(signal.aborted ? 'timeout' : error instanceof RangeError ? 'response_too_large' : 'incompatible_response')
     }
   }
 
   const { status } = response
-  if (status === 403 && url.pathname === '/v1/magpie/usage') {
+  if ((status === 400 || status === 410) && url.searchParams.has('cursor')) {
     const value = await readBoundedJson(response, maxResponseBytes).catch(() => undefined)
     if (signal.aborted) throw new GatewayFailure('timeout')
-    if (isRecord(value) && isRecord(value.error) && value.error.code === 'gateway_key_held') {
-      throw new GatewayFailure('restricted_key', status)
-    }
+    const code = isRecord(value) && isRecord(value.error) ? readCursorFailure(value.error.code) : null
+    throw new GatewayFailure(code ?? 'incompatible_response', status)
   } else {
     void response.body?.cancel().catch(() => {})
   }
   const code = status >= 300 && status < 400 ? 'redirect' : status === 401 ? 'unauthorized'
-    : status === 403 ? 'forbidden' : status === 404 || status === 405 ? 'incompatible_response' : 'unavailable'
+    : status === 403 ? 'forbidden' : status === 429 ? 'rate_limited'
+      : status < 500 ? 'incompatible_response' : 'unavailable'
   throw new GatewayFailure(code, status)
+}
+
+export async function readNativeChanges(baseUrl: URL, cursor: string, timeoutMs: number): Promise<unknown> {
+  const url = new URL('/v1/magpie/usage/requests', baseUrl)
+  for (let limit = pageLimit; ; limit = Math.max(1, Math.floor(limit / 2))) {
+    url.search = new URLSearchParams({ cursor, limit: String(limit) }).toString()
+    try {
+      return await readGatewayJson(url, AbortSignal.timeout(timeoutMs))
+    } catch (error) {
+      if (limit === 1 || !(error instanceof GatewayFailure) || error.code !== 'response_too_large') throw error
+    }
+  }
 }
 
 export async function readGatewayPid(baseUrl: URL, timeoutMs: number): Promise<number> {

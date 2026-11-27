@@ -28,11 +28,12 @@ type PageOptions = {
 }
 
 const source = readFileSync(new URL('../../page/options.js', import.meta.url), 'utf8')
-const page = runInNewContext(`${source}\nusageHubOptions`, { crypto, URL, URLSearchParams }) as PageOptions
+const page = runInNewContext(`${source}\nusageHubOptions`, { crypto, URL, URLSearchParams, Intl }) as PageOptions
 const revisionOne = '11111111-1111-4111-8111-111111111111'
-const original = { collectionMode: 'pull', enabled: true, centerGatewayUrl: 'http://127.0.0.1:3425/',
-  requestTimeoutSec: 30, configRevision: revisionOne,
+const settings = { role: 'center', enabled: true, centerGatewayUrl: 'http://127.0.0.1:3425/',
+  ingestHost: '127.0.0.1', ingestPort: 3494, timeZone: 'Asia/Shanghai', requestTimeoutSec: 30,
 }
+const original = { ...settings, collectionMode: 'push', configRevision: revisionOne }
 
 function harness(initial: Options = original) {
   let stored: Options = { ...initial }
@@ -65,14 +66,16 @@ function harness(initial: Options = original) {
   }
 }
 
-describe('center Options page', () => {
-  test('requires explicit pull enablement and validates the loopback address and timeout', () => {
-    const defaults = { enabled: false, centerGatewayUrl: 'http://127.0.0.1:3425/', requestTimeoutSec: '30' }
+describe('plugin Options page', () => {
+  test('defaults to a disabled center and validates its gateway, listener and time zone', () => {
+    const defaults = { ...settings, enabled: false, ingestPort: '3494', requestTimeoutSec: '30',
+      sourceGatewayUrl: 'http://127.0.0.1:3425/', centerIngestUrl: '', sourceId: '', reportKeyFile: '',
+    }
     expect(page.settingsView({})).toEqual(defaults)
-    expect(page.settingsView({ role: 'center', enabled: true, ingestKeyFile: '/fixture/old-key.json' })).toEqual(defaults)
+    expect(page.settingsView({ collectionMode: 'pull', role: 'center', enabled: true })).toEqual(defaults)
     expect(page.settingsView(original)).toEqual({ ...defaults, enabled: true })
-    const draft = { ...defaults, enabled: true, centerGatewayUrl: 'http://[::1]:3425', requestTimeoutSec: 60 }
-    expect(page.settingsPatch(draft)).toEqual({ ...draft, collectionMode: 'pull', centerGatewayUrl: 'http://[::1]:3425/' })
+    const draft = { ...settings, centerGatewayUrl: 'http://[::1]:3425', ingestHost: '::', requestTimeoutSec: 60 }
+    expect(page.settingsPatch(draft)).toEqual({ ...draft, collectionMode: 'push', centerGatewayUrl: 'http://[::1]:3425/' })
     for (const url of ['https://other.example/', 'http://127.0.0.1/?', 'http://127.0.0.1/#',
       'http://127.0.0.1/anything/..', 'http://@127.0.0.1', 'ftp://127.0.0.1/']) {
       expect(() => page.settingsPatch({ ...draft, centerGatewayUrl: url })).toThrow(/回环网关根地址/)
@@ -80,6 +83,31 @@ describe('center Options page', () => {
     for (const timeout of [0, 121, Number.NaN, 1.5]) {
       expect(() => page.settingsPatch({ ...draft, requestTimeoutSec: timeout })).toThrow(/1 至 120/)
     }
+    for (const ingestPort of [3425, 3493]) expect(() => page.settingsPatch({ ...draft, ingestPort })).toThrow(/冲突/)
+    expect(() => page.settingsPatch({ ...draft, ingestHost: '256.1.1.1' })).toThrow(/监听/)
+    expect(() => page.settingsPatch({ ...draft, timeZone: 'Fixture/Unknown' })).toThrow(/时区/)
+  })
+
+  test('validates and saves the Windows sender fields and shows their readback', async () => {
+    const draft = { role: 'sender', enabled: true, sourceGatewayUrl: 'http://127.0.0.1:3425',
+      centerIngestUrl: 'http://198.51.100.1:3494', sourceId: 'b49664b2-d102-4e01-93b0-a67d696bd618',
+      reportKeyFile: String.raw`C:\Magpie\usage-hub\report-key.txt`, requestTimeoutSec: 30,
+    }
+    expect(() => page.settingsPatch({ ...draft, sourceGatewayUrl: draft.centerIngestUrl })).toThrow(/回环/)
+    expect(() => page.settingsPatch({ ...draft, centerIngestUrl: `${draft.centerIngestUrl}/checkpoint` })).toThrow(/中心接收根地址/)
+    expect(() => page.settingsPatch({ ...draft, sourceId: 'local' })).toThrow(/来源 ID/)
+    expect(() => page.settingsPatch({ ...draft, reportKeyFile: 'report-key.txt' })).toThrow(/完整路径/)
+    const patch = page.settingsPatch(draft)
+    expect(patch).toEqual({ ...draft, collectionMode: 'push', sourceGatewayUrl: `${draft.sourceGatewayUrl}/`,
+      centerIngestUrl: `${draft.centerIngestUrl}/`,
+    })
+    const ui = harness({})
+    await ui.refresh()
+    await ui.submit(patch)
+    expect(ui.last).toMatchObject({ result: 'confirmed', saved: patch })
+    expect(page.settingsView(ui.last.saved!)).toMatchObject({ ...draft, sourceGatewayUrl: `${draft.sourceGatewayUrl}/`,
+      centerIngestUrl: `${draft.centerIngestUrl}/`, requestTimeoutSec: '30',
+    })
   })
 
   test('opens the service root before navigating to the requested dashboard', () => {
@@ -89,6 +117,7 @@ describe('center Options page', () => {
     expect(page.pageServiceLink(service, pageUrl, original)).toBe(`${service}#revision=${revisionOne}&view=dashboard`)
     expect(page.pageServiceLink(service, pageUrl, { enabled: true })).toBe(service)
     expect(page.pageServiceLink(service, pageUrl, { ...original, enabled: false })).toBe(`${service}#revision=${revisionOne}`)
+    expect(page.pageServiceLink(service, pageUrl, { ...original, role: 'sender' })).toBe(`${service}#revision=${revisionOne}`)
     expect(page.pageServiceLink('', pageUrl, original)).toBe('')
     expect(page.pageServiceLink(service, 'https://elsewhere.example/', original)).toBe('')
   })
@@ -99,7 +128,7 @@ describe('center Options page', () => {
     await ui.refresh()
     ui.update({ customUse: { enabled: true } })
     for (const enabled of [true, false]) {
-      const draft = { enabled, centerGatewayUrl: 'http://127.0.0.1:3425', requestTimeoutSec: 45 }
+      const draft = { ...settings, enabled, requestTimeoutSec: 45 }
       const patch = page.settingsPatch(draft)
       await ui.submit(patch)
       const savedRevision = ui.last.saved?.configRevision

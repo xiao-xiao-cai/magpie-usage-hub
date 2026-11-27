@@ -2,7 +2,7 @@
 
 2026-11-25 · 以 Windows 和 Magpie `v0.1.4783` 为操作基线
 
-从一个显示今日调用量的页面开始，随后用一个最小后端验证插件宿主。本指南说明怎样选择插件入口、准备环境、安装调试和发布。开发本仓库的只读拉取时，先查功能规格和当前兼容性基线。[功能规格与开发参考索引](01-插件定位与功能规格.md) · [开发基线](02-开发基线与兼容性.md) · [官方插件开发文档](https://usemagpie.ai/docs/plugins) · [Magpie v0.1.4783](https://github.com/yetone/magpie/releases/tag/v0.1.4783)
+从一个显示今日调用量的页面开始，随后用一个最小后端验证插件宿主。本指南说明怎样选择插件入口、准备环境、安装调试和发布。开发本仓库的用量上报和查询时，先查功能规格及当前兼容性基线。[功能规格与开发参考索引](01-插件定位与功能规格.md) · [开发基线](02-开发基线与兼容性.md) · [官方插件开发文档](https://usemagpie.ai/docs/plugins) · [Magpie v0.1.4783](https://github.com/yetone/magpie/releases/tag/v0.1.4783)
 
 ## 1. 先选插件入口
 
@@ -211,9 +211,9 @@ magpie plugin list --json
 
 [官方 Acme 入门](https://usemagpie.ai/docs/plugins#quick) · [请求与流式处理](https://usemagpie.ai/docs/plugins#requests) · [配额 hook](https://usemagpie.ai/docs/plugins#usage) · [路由与用量观察](https://usemagpie.ai/docs/plugins#gateway-points) · [中间件执行限制](https://github.com/yetone/magpie/blob/v0.1.4783/docs/subsystems/gateway-middleware.md)
 
-### 在中心只读插件里怎样分工
+### Usage Hub 的宿主分工
 
-中心 Bun 管理运行锁、来源设置和网关查询。Options 页保存同一实例的回环地址及启用状态。Magpie Web 代理中心看板和管理页，只有后端消费远程 Key 与原生响应。[整体架构与模块职责](03-整体架构与模块职责.md) · [网关接口与用量数据规范](04-网关接口与用量数据规范.md)
+来源 Bun 持锁从回环网关采集，通过中心接收端口提交。中心 Bun 持锁提交用量明细和检查点；Magpie Web 代理中心看板、管理页以及各自角色的诊断页。[整体架构与模块职责](03-整体架构与模块职责.md) · [网关接口与用量数据规范](04-网关接口与用量数据规范.md)
 
 改变请求、字段或来源写入时，用模拟 HTTP 端点和临时目录验证响应、部分失败和下次读回。涉及宿主接管时用单个隔离实例，跨网关查询时核对实际来源和中心。[同步流程与故障恢复设计](05-同步流程与故障恢复设计.md) · [开发阶段与验收计划](08-开发阶段与验收计划.md)
 

@@ -1,22 +1,38 @@
 import { expect, test } from 'bun:test'
-import { readCenterOptions, readGatewayUrl } from '../../src/options.ts'
+import { resolve } from 'node:path'
+import { readOptions, readGatewayUrl } from '../../src/options.ts'
 
-test('only the explicitly enabled pull mode starts the center and uses a loopback gateway', () => {
-  const options = { collectionMode: 'pull', enabled: true }
-  expect(readCenterOptions({})).toBeNull()
-  expect(readCenterOptions({ enabled: true, role: 'center', ingestPort: 3494 })).toBeNull()
-  expect(readCenterOptions({ enabled: true, mode: 'continuous' })).toBeNull()
-  expect(readCenterOptions({ ...options, enabled: false })).toBeNull()
-  expect(readCenterOptions(options)?.gateway.href).toBe('http://127.0.0.1:3425/')
-  expect(readCenterOptions(options)?.timeoutMs).toBe(30_000)
-  expect(readCenterOptions({ ...options, centerGatewayUrl: 'https://[::1]:4525', requestTimeoutSec: 120 })?.timeoutMs)
-    .toBe(120_000)
-  expect(() => readCenterOptions({ ...options, centerGatewayUrl: 'https://remote.example' })).toThrow('center_not_loopback')
-  expect(() => readCenterOptions({ ...options, centerGatewayUrl: 'http://127.0.0.1/path' })).toThrow('invalid_centerGatewayUrl')
-  expect(() => readCenterOptions({ ...options, requestTimeoutSec: 0 })).toThrow('invalid_requestTimeoutSec')
-  expect(() => readCenterOptions({ ...options, requestTimeoutSec: '30' })).toThrow('invalid_requestTimeoutSec')
-  expect(() => readCenterOptions({ ...options, configRevision: 'invalid' })).toThrow('invalid_config_revision')
-  expect(() => readCenterOptions({ ...options, enabled: 'true' })).toThrow('invalid_enabled')
+test('explicitly enabled center settings use a loopback gateway and a separate receiver', () => {
+  const options = { collectionMode: 'push', role: 'center', enabled: true }
+  expect(readOptions({})).toBeNull()
+  expect(readOptions({ enabled: true, role: 'center', ingestPort: 3494 })).toBeNull()
+  expect(readOptions({ ...options, collectionMode: 'pull' })).toBeNull()
+  expect(readOptions({ ...options, enabled: false })).toBeNull()
+  expect(readOptions(options)).toMatchObject({ role: 'center', timeoutMs: 30_000,
+    ingestHost: '127.0.0.1', ingestPort: 3494, timeZone: 'Asia/Shanghai' })
+  expect(readOptions(options)?.gateway.href).toBe('http://127.0.0.1:3425/')
+  expect(readOptions({ ...options, centerGatewayUrl: 'https://[::1]:4525', requestTimeoutSec: 120 })?.timeoutMs).toBe(120_000)
+  expect(() => readOptions({ ...options, centerGatewayUrl: 'https://remote.example' })).toThrow('gateway_not_loopback')
+  expect(() => readOptions({ ...options, centerGatewayUrl: 'http://127.0.0.1/path' })).toThrow('invalid_centerGatewayUrl')
+  expect(() => readOptions({ ...options, ingestPort: 3493 })).toThrow('invalid_ingestPort')
+  expect(() => readOptions({ ...options, ingestHost: 'localhost' })).toThrow('invalid_ingestHost')
+  expect(() => readOptions({ ...options, timeZone: '+08:00' })).toThrow('invalid_timeZone')
+  expect(() => readOptions({ ...options, requestTimeoutSec: 0 })).toThrow('invalid_requestTimeoutSec')
+  expect(() => readOptions({ ...options, requestTimeoutSec: '30' })).toThrow('invalid_requestTimeoutSec')
+  expect(() => readOptions({ ...options, configRevision: 'invalid' })).toThrow('invalid_config_revision')
+  expect(() => readOptions({ ...options, enabled: 'true' })).toThrow('invalid_enabled')
+})
+
+test('sender settings bind a real source ID, absolute local key file, and registered receiver URL', () => {
+  const options = { collectionMode: 'push', role: 'sender', enabled: true, centerIngestUrl: 'https://center.example:3494',
+    reportKeyFile: resolve('fixture.key'), sourceId: '9cd96a95-2315-4ad2-b2ee-ee467fa640a3' }
+  const sender = readOptions(options)
+  expect(sender?.role === 'sender' && sender.centerIngest.href).toBe('https://center.example:3494/')
+  expect(sender?.gateway.href).toBe('http://127.0.0.1:3425/')
+  expect(() => readOptions({ ...options, sourceId: 'local' })).toThrow('invalid_sourceId')
+  expect(() => readOptions({ ...options, reportKeyFile: 'fixture.key' })).toThrow('invalid_reportKeyFile')
+  expect(() => readOptions({ ...options, sourceGatewayUrl: 'http://source.example' })).toThrow('gateway_not_loopback')
+  expect(() => readOptions({ ...options, centerIngestUrl: 'https://center.example/usage' })).toThrow('invalid_centerIngestUrl')
 })
 
 test('gateway roots permit HTTP and HTTPS authority syntax and reject extra URL components', () => {

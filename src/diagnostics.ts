@@ -1,9 +1,10 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
+import type { SyncPhase } from './sync/protocol.ts'
 
 export const diagnosticPort = 3493
 
 type DiagnosticFailure = {
-  stage: 'center' | 'state' | 'options'
+  stage: 'source' | 'center' | 'state' | 'options'
   code: string
   httpStatus?: number
 }
@@ -13,21 +14,31 @@ type DiagnosticStatus = {
   loadedRevision: string | null
   appliedRevision: string | null
   phase: 'starting' | 'disabled' | 'migration_required' | 'waiting_lock' | 'ready' | 'retrying' | 'blocked'
+  role: 'center' | 'sender' | null
+  syncPhase: SyncPhase | null
   ready: boolean
+  hasMore: boolean
+  lastPageAt: string | null
+  lastSyncedAt: string | null
   lastAttemptAt: string | null
   retryAt: string | null
   failure: DiagnosticFailure | null
 }
 
-type DiagnosticUpdate = Partial<Omit<DiagnosticStatus, 'schema' | 'loadedRevision'>>
+type DiagnosticUpdate = Partial<Omit<DiagnosticStatus, 'schema' | 'loadedRevision' | 'role'>>
 
-export function createDiagnostics(loadedRevision: string | null) {
+export function createDiagnostics(loadedRevision: string | null, role: DiagnosticStatus['role'] = null) {
   let status: DiagnosticStatus = {
     schema: 'magpie-usage-hub/status-v1',
     loadedRevision,
     appliedRevision: null,
     phase: 'starting',
+    role,
+    syncPhase: null,
     ready: false,
+    hasMore: false,
+    lastPageAt: null,
+    lastSyncedAt: null,
     lastAttemptAt: null,
     retryAt: null,
     failure: null,
@@ -48,7 +59,6 @@ const assets = new Map([
   ['/status.css', ['status.css', 'text/css; charset=utf-8']],
 ])
 const dashboardAssets = new Map([
-  ['/dashboard/', ['dashboard/index.html', 'text/html; charset=utf-8']],
   ['/dashboard/dashboard.js', ['dashboard/dashboard.js', 'text/javascript; charset=utf-8']],
   ['/dashboard/dashboard.css', ['dashboard/dashboard.css', 'text/css; charset=utf-8']],
 ])
@@ -56,16 +66,28 @@ const managementAssets = new Map([
   ['/sources/sources.js', ['sources/sources.js', 'text/javascript; charset=utf-8']],
   ['/sources/sources.css', ['sources/sources.css', 'text/css; charset=utf-8']],
 ])
-const managementPaths = new Set(['/api/sources', '/api/sources/test'])
+const queryPaths = new Set(['/api/usage', '/api/usage/rows'])
 const adminHeader = 'X-Magpie-Usage-Admin'
+const queryHeader = 'X-Magpie-Usage-Query'
 type DashboardQuery = (url: URL, signal: AbortSignal) => Promise<Response>
 type ManageSources = (request: Request) => Response | Promise<Response>
+
+function admits(request: Request, header: string, token: string) {
+  const actual = Buffer.from(request.headers.get(header) ?? '', 'utf8')
+  return actual.length === token.length && timingSafeEqual(actual, Buffer.from(token))
+}
+
+function preflight(headers: Headers, header: string, methods: string) {
+  headers.set('Access-Control-Allow-Headers', header)
+  headers.set('Access-Control-Allow-Methods', methods)
+  return new Response(null, { status: 204, headers })
+}
 
 export function serveDiagnostics(
   diagnostics: Diagnostics, port = diagnosticPort, dashboard?: DashboardQuery, manage?: ManageSources,
 ) {
   const adminToken = manage ? randomBytes(32).toString('hex') : ''
-  const adminTokenBytes = Buffer.from(adminToken, 'utf8')
+  const queryToken = dashboard ? randomBytes(32).toString('hex') : ''
   return Bun.serve({
     hostname: '127.0.0.1',
     port,
@@ -85,14 +107,11 @@ export function serveDiagnostics(
       headers.set('Access-Control-Allow-Origin', 'null')
       const url = new URL(request.url)
       const path = url.pathname
-      if (manage && managementPaths.has(path)) {
+      if (manage && path === '/api/sources') {
         if (request.method === 'OPTIONS' && origin === 'null') {
-          headers.set('Access-Control-Allow-Headers', `Content-Type, ${adminHeader}`)
-          headers.set('Access-Control-Allow-Methods', 'GET, POST')
-          return new Response(null, { status: 204, headers })
+          return preflight(headers, `Content-Type, ${adminHeader}`, 'GET, POST')
         }
-        const presented = Buffer.from(request.headers.get(adminHeader) ?? '', 'utf8')
-        if (presented.length !== adminTokenBytes.length || !timingSafeEqual(presented, adminTokenBytes)) {
+        if (!admits(request, adminHeader, adminToken)) {
           return Response.json({ error: { code: 'admin_token_invalid' } }, { status: 403, headers })
         }
         try {
@@ -105,20 +124,28 @@ export function serveDiagnostics(
           return Response.json({ error: { code: 'source_management_unavailable' } }, { status: 503, headers })
         }
       }
+      if (dashboard && queryPaths.has(path) && request.method === 'OPTIONS' && origin === 'null') {
+        return preflight(headers, queryHeader, 'GET')
+      }
       if (request.method !== 'GET') {
         headers.set('Allow', 'GET')
         return new Response(null, { status: 405, headers })
       }
 
-      if (manage && path === '/sources/') {
+      if ((manage && path === '/sources/') || (dashboard && path === '/dashboard/')) {
         headers.delete('Access-Control-Allow-Origin')
         headers.set('Content-Type', 'text/html; charset=utf-8')
         headers.set('Content-Security-Policy', `${headers.get('Content-Security-Policy')}; frame-ancestors 'self'`)
-        const template = await Bun.file(new URL('../ui/sources/index.html', import.meta.url)).text()
-        return new Response(template.replace('__USAGE_ADMIN_TOKEN__', adminToken), { headers })
+        const isDashboard = path === '/dashboard/'
+        const template = await Bun.file(new URL(`../ui${path}index.html`, import.meta.url)).text()
+        return new Response(isDashboard ? template.replace('__USAGE_QUERY_TOKEN__', queryToken)
+          : template.replace('__USAGE_ADMIN_TOKEN__', adminToken), { headers })
       }
       if (path === '/api/status') return Response.json(diagnostics.getStatus(), { headers })
-      if (dashboard && path === '/api/usage') {
+      if (dashboard && queryPaths.has(path)) {
+        if (!admits(request, queryHeader, queryToken)) {
+          return Response.json({ error: { code: 'query_token_invalid' } }, { status: 403, headers })
+        }
         try {
           const result = await dashboard(url, request.signal)
           headers.set('Content-Type', 'application/json; charset=utf-8')

@@ -1,40 +1,50 @@
 const byId = id => document.getElementById(id)
-const sourcesPath = '../api/sources'
 const adminToken = document.querySelector('meta[name="usage-admin-token"]')?.content
 const form = byId('source-form')
+const rotationForm = byId('rotation-form')
 const notice = byId('source-notice')
-const testButton = byId('test-source')
-const saveButton = byId('save-source')
 const fields = {
-  name: byId('source-name'), gatewayUrl: byId('source-gateway'), enabled: byId('source-enabled'), key: byId('source-key'),
+  name: byId('source-name'), enabled: byId('source-enabled'), digest: byId('source-digest'), rotation: byId('rotation-digest'),
 }
-const newSource = { name: '', gatewayUrl: '', enabled: true, credentialConfigured: false }
-const failures = new Map([
-  ['unauthorized', '网关未接受此 Key。'], ['forbidden', '网关拒绝访问。请核对允许地址和 Key 权限。'],
-  ['timeout', '连接超时。请核对网关地址和网络。'], ['unavailable', '网关不可达或服务异常。'],
-  ['incompatible_response', '网关响应不兼容。请核对来源的 Magpie 版本。'], ['redirect', '网关返回重定向。请填写最终网关根地址。'],
-  ['restricted_key', '此 Key 的用量范围受限。请检查模型、账户与预算设置。'],
+const newSource = { name: '', enabled: true }
+const recoveryText = new Map([
+  ['cursor_expired', '原生游标已过期'], ['cursor_reset', '原生游标已重置'],
+  ['cursor_filter_changed', '原生读取范围已变更'], ['cursor_invalid', '原生游标无效'],
 ])
+const failures = new Map([
+  ['invalid_source', '请核对来源设置。草稿已保留。'],
+  ['credential_in_use', '该摘要已登记。请为此来源生成不同的令牌。'],
+  ['pending_key_exists', '已有待用令牌。请刷新并核对上报状态。'],
+  ['pending_key_unverified', '请先在来源启用待用令牌，认证成功后再撤销当前令牌。'],
+  ['source_rebuild_not_required', '来源的重建状态已变化。请刷新后核对。'],
+  ['source_save_failed', '操作失败。草稿已保留，可重试。'],
+])
+const successText = { create: '来源已登记。', update: '来源已保存。', rotate: '新令牌已登记。',
+  revoke: '令牌已撤销。', rebuild: '已确认重建。来源会从可读历史开始同步。',
+}
+const dateTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'medium' })
 let snapshot
 let base = newSource
-let baseRevision = 0
+let baseRevision = ''
 let busy = false
 let stale = false
 let needsReview = false
-let tested
-
-function gateway(value) {
-  if (!/^https?:\/\/[^/?#@\\\s]+\/?$/i.test(value)) return ''
-  try { return new URL(value).href } catch { return '' }
-}
+let confirmation
 
 function draft() {
-  return { name: fields.name.value.trim(), gatewayUrl: fields.gatewayUrl.value.trim(), enabled: fields.enabled.checked, key: fields.key.value.trim() }
+  const name = fields.name.value.trim()
+  return { ...(name !== base.name ? { name } : {}),
+    ...(fields.enabled.checked !== base.enabled ? { enabled: fields.enabled.checked } : {}),
+    ...(!base.id && fields.digest.value ? { digest: fields.digest.value } : {}),
+    ...(fields.rotation.value ? { rotation: fields.rotation.value } : {}),
+  }
 }
 
-function hasChanges(value = draft()) {
-  return Boolean(value.key) || value.name !== base.name || value.enabled !== base.enabled
-    || (gateway(value.gatewayUrl) || value.gatewayUrl) !== base.gatewayUrl
+function restore(values) {
+  for (const [field, value] of Object.entries(values)) {
+    if (field === 'enabled') fields.enabled.checked = value
+    else fields[field].value = value
+  }
 }
 
 function selected() {
@@ -46,130 +56,182 @@ function conflict() {
 }
 
 function readSnapshot(value) {
-  if (!Number.isSafeInteger(value?.revision) || value.revision < 0 || !Array.isArray(value.sources)) throw new Error()
-  const sources = value.sources.map(source => {
-    const { id, name, gatewayUrl, enabled, credentialConfigured } = source
-    if (typeof id !== 'string' || typeof name !== 'string' || typeof gatewayUrl !== 'string'
-      || typeof enabled !== 'boolean' || typeof credentialConfigured !== 'boolean') throw new Error()
-    return { id, name, gatewayUrl, enabled, credentialConfigured }
-  })
-  return { revision: value.revision, sources }
+  if (typeof value?.revision !== 'string' || !value.revision || !Array.isArray(value.sources)) throw new Error()
+  for (const source of value.sources) {
+    if (typeof source?.id !== 'string' || typeof source.name !== 'string' || typeof source.enabled !== 'boolean'
+      || typeof source.isLocal !== 'boolean' || typeof source.credentials?.current !== 'boolean'
+      || typeof source.credentials.pending !== 'boolean' || typeof source.credentials.pendingVerified !== 'boolean') throw new Error()
+  }
+  return value
 }
 
-async function callSource(suffix = '', body) {
-  if (typeof adminToken !== 'string' || !/^[0-9a-f]{64}$/.test(adminToken)) throw new Error()
+async function callSource(body) {
+  if (!/^[0-9a-f]{64}$/.test(adminToken ?? '')) throw new Error()
   const headers = { 'X-Magpie-Usage-Admin': adminToken }
   if (body) headers['Content-Type'] = 'application/json'
-  const response = await fetch(`${sourcesPath}${suffix}`, {
+  const response = await fetch('../api/sources', {
     headers, method: body ? 'POST' : 'GET', body: body ? JSON.stringify(body) : undefined,
-    cache: 'no-store', credentials: 'omit', redirect: 'error',
-    signal: AbortSignal.timeout(suffix === '/test' ? 125_000 : 10_000),
+    cache: 'no-store', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(10_000),
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => null)
     throw new Error('source_request_failed', { cause: { status: response.status, code: payload?.error?.code } })
   }
-  return response.json()
+  return readSnapshot(await response.json())
+}
+
+function credentialLabel(source) {
+  if (source.isLocal) return '中心本机'
+  const { current, pending, pendingVerified } = source.credentials
+  if (pending) return pendingVerified ? '待用令牌已认证，可撤销原令牌' : '等待待用令牌认证'
+  return current ? '已登记' : '待登记'
+}
+
+function rebuildAllowed(source) {
+  return source && (source.rebuildAllowed ?? source.phase === 'recovery_required')
 }
 
 function controls() {
-  const value = draft()
-  const changed = hasChanges(value)
-  const keyNeeded = !base.credentialConfigured || gateway(value.gatewayUrl) !== base.gatewayUrl
-  const connectionChanged = keyNeeded || Boolean(value.key)
-  const blocked = busy || stale || !snapshot || conflict()
   const latest = selected()
+  const local = Boolean(latest?.isLocal)
+  const remote = Boolean(latest && !local)
+  const blocked = busy || stale || !snapshot || conflict()
+  const editing = Boolean(base.id)
+  const { name, enabled, digest, rotation } = draft()
+  const credential = latest?.credentials
+
   byId('refresh-sources').disabled = busy
-  byId('source-fields').disabled = busy || !snapshot
   byId('sources-section').setAttribute('aria-busy', String(busy))
+  form.hidden = local
   form.setAttribute('aria-busy', String(busy))
-  fields.key.required = keyNeeded
-  byId('source-key-hint').textContent = keyNeeded ? '填写此地址的只读 Key，并测试连接后保存。'
-    : value.key ? '测试连接后即可保存替换的 Key。' : '已配置。留空沿用，输入新 Key 可轮换。'
-  testButton.disabled = blocked
-  const passed = tested?.gatewayUrl === gateway(value.gatewayUrl) && tested.key === value.key
-  saveButton.disabled = blocked || !changed || (connectionChanged && !passed)
-  const reset = byId('reset-source')
-  reset.hidden = !base.id && !changed
-  reset.textContent = base.id ? '返回添加来源' : '清空草稿'
+  byId('source-fields').disabled = busy || !snapshot || local
+  byId('create-credential').hidden = editing
+  byId('save-source').disabled = blocked || Boolean(confirmation) || local
+    || (name === undefined && enabled === undefined && !digest)
+  byId('source-identity').hidden = !remote
+  byId('source-id').textContent = remote ? latest.id : ''
+  byId('local-source-hint').hidden = !local
+  byId('source-credentials').hidden = !remote
+  byId('credential-status').textContent = remote ? credentialLabel(latest) : ''
+  rotationForm.hidden = Boolean(credential?.pending && !rotation)
+  fields.rotation.disabled = busy
+  byId('rotate-source').textContent = credential?.current ? '登记新令牌' : '登记令牌'
+  byId('rotate-source').disabled = blocked || Boolean(confirmation) || !remote || Boolean(credential?.pending) || !rotation
+  byId('revoke-current').hidden = !credential?.current
+  byId('revoke-current').disabled = blocked || Boolean(confirmation) || Boolean(credential?.pending && !credential.pendingVerified)
+  byId('revoke-pending').hidden = !credential?.pending
+  byId('revoke-all').hidden = !credential?.current || !credential?.pending
+  byId('revoke-pending').disabled = blocked || Boolean(confirmation)
+  byId('revoke-all').disabled = blocked || Boolean(confirmation)
+  byId('recovery-tools').hidden = !rebuildAllowed(latest)
+  byId('rebuild-source').disabled = blocked || Boolean(confirmation)
+  byId('action-confirmation').hidden = !confirmation
+  byId('confirm-action').disabled = blocked
+  byId('cancel-action').disabled = busy
+  byId('reset-source').hidden = !editing && name === undefined && enabled === undefined && !digest
+  byId('reset-source').disabled = busy
+  byId('reset-source').textContent = editing ? '返回添加来源' : '清空草稿'
   byId('revision-review').hidden = stale || !conflict()
-  byId('review-latest').disabled = busy || Boolean(base.id && !latest)
+  byId('review-latest').disabled = busy || Boolean(editing && !latest)
   byId('latest-source').textContent = latest
-    ? `当前已保存为「${latest.name}」，地址 ${latest.gatewayUrl}，查询${latest.enabled ? '已启用' : '已停用'}。`
-    : base.id ? '当前来源已不存在。可返回添加来源。' : '来源列表已更新，请核对后继续。'
+    ? `当前已保存为「${latest.name}」，同步${latest.enabled ? '已启用' : '已暂停'}。${credentialLabel(latest)}。`
+    : editing ? '当前来源已不存在。可返回添加来源。' : '来源列表已更新，请核对后继续。'
 }
 
 function showEditor(source = newSource) {
   base = source
   baseRevision = snapshot.revision
-  tested = undefined
   needsReview = false
-  byId('source-title').textContent = source.id ? `编辑来源 · ${source.name}` : '添加来源'
-  fields.name.value = source.name
-  fields.gatewayUrl.value = source.gatewayUrl
-  fields.enabled.checked = source.enabled
-  fields.key.value = ''
+  confirmation = undefined
+  byId('source-title').textContent = source.isLocal ? source.name : source.id ? `编辑来源 · ${source.name}` : '添加来源'
+  restore({ name: source.name, enabled: source.enabled, digest: '', rotation: '' })
   notice.textContent = ''
-  controls()
+}
+
+function appendCell(row, value, title = false) {
+  const element = document.createElement(title ? 'th' : 'td')
+  if (title) element.scope = 'row'
+  element.textContent = value
+  row.append(element)
+  return element
+}
+
+function appendNote(cell, text) {
+  const note = document.createElement('span')
+  note.className = 'detail-meta'
+  note.textContent = text
+  cell.append(note)
+}
+
+function syncLabel(source) {
+  if (!source.enabled) return '已暂停'
+  if (source.phase === 'recovery_required') return '待确认重建'
+  if (source.phase === 'rebuilding') return '重建中'
+  if (!source.lastSeenAt) return source.isLocal ? '等待首次采集' : '等待来源认证'
+  if (Date.now() - Date.parse(source.lastSeenAt) > 180_000) return '暂失联'
+  if (source.phase === 'backfill') return '正在回填历史'
+  return source.hasMore ? '追赶中' : '已同步'
 }
 
 function rowFor(source) {
   const row = document.createElement('tr')
-  const title = document.createElement('th')
-  title.scope = 'row'
-  title.textContent = source.name
-  row.append(title)
-  for (const value of [source.gatewayUrl, source.enabled ? '已启用' : '已停用', source.credentialConfigured ? '已配置' : '待配置']) {
-    const cell = document.createElement('td')
-    cell.textContent = value
-    row.append(cell)
-  }
-  const actions = document.createElement('td')
+  appendCell(row, source.name, true)
+  const status = appendCell(row, syncLabel(source))
+  const reason = recoveryText.get(source.recoveryReason)
+  if (reason) appendNote(status, reason)
+  if (source.gap?.missingRows > 0) appendNote(status, `上次重建未找到 ${source.gap.missingRows} 条旧记录`)
+  const contact = appendCell(row, source.lastSeenAt ? dateTime.format(Date.parse(source.lastSeenAt)) : '暂无')
+  if (source.lastSyncedAt) appendNote(contact, `最近完成 ${dateTime.format(Date.parse(source.lastSyncedAt))}`)
+  if (source.lastPageAt) appendNote(contact, `最近确认页 ${dateTime.format(Date.parse(source.lastPageAt))}`)
+  appendCell(row, credentialLabel(source))
+  const actions = appendCell(row, '')
   const button = document.createElement('button')
   button.type = 'button'
-  button.textContent = '编辑'
-  button.setAttribute('aria-label', `编辑 ${source.name}`)
+  button.textContent = source.isLocal ? '查看' : '编辑'
+  button.setAttribute('aria-label', `${button.textContent} ${source.name}`)
   button.addEventListener('click', () => {
     if (busy) return
     if (source.id !== base.id) {
-      if (hasChanges()) {
-        notice.textContent = '请保存当前草稿，或清空后再切换来源。'
+      if (Object.keys(draft()).length) {
+        notice.textContent = '请保存或清空草稿后切换来源。'
         return
       }
       showEditor(source)
+      controls()
     }
-    fields.name.focus()
+    if (source.isLocal) byId('source-title').focus()
+    else fields.name.focus()
   })
   actions.append(button)
-  row.append(actions)
   return row
 }
 
 function present(next) {
-  const edited = snapshot && (hasChanges() || needsReview)
   snapshot = next
-  if (!edited) showEditor(selected())
   byId('sources-rows').replaceChildren(...next.sources.map(rowFor))
   byId('sources-table').hidden = !next.sources.length
   byId('sources-empty').hidden = next.sources.length > 0
-  controls()
 }
 
 async function loadSources() {
-  const next = readSnapshot(await callSource())
+  const next = await callSource()
+  const preserve = needsReview || Boolean(snapshot && Object.keys(draft()).length)
   stale = false
   present(next)
+  if (!preserve) showEditor(selected())
   byId('sources-notice').textContent = ''
 }
 
 async function refresh() {
   if (busy) return
+  confirmation = undefined
   busy = true
   controls()
   byId('sources-notice').textContent = '正在读取来源…'
   try {
     await loadSources()
   } catch (error) {
+    if (error?.cause?.status === 403) stale = true
     byId('sources-notice').textContent = error?.cause?.status === 403
       ? '管理会话已失效。请从用量看板重新打开来源管理。'
       : snapshot ? '刷新失败。当前显示上次读取的来源，可重试。' : '暂时无法读取来源。请刷新重试。'
@@ -179,71 +241,42 @@ async function refresh() {
   }
 }
 
-function readDraft() {
-  if (!form.reportValidity()) return
-  const value = draft()
-  const gatewayUrl = gateway(value.gatewayUrl)
-  if (!value.name || !gatewayUrl) {
-    notice.textContent = value.name ? '请输入有效的 HTTP(S) 网关根地址。' : '请输入来源名称。'
-    fields[value.name ? 'gatewayUrl' : 'name'].focus()
-    return
-  }
-  if ((!base.credentialConfigured || base.gatewayUrl !== gatewayUrl) && !value.key) {
-    notice.textContent = '请输入此网关的专用只读 Key。'
-    fields.key.focus()
-    return
-  }
-  return { ...(base.id ? { id: base.id } : {}), revision: baseRevision, name: value.name, gatewayUrl, enabled: value.enabled,
-    ...(value.key ? { key: value.key } : {}),
-  }
-}
-
-async function submit(isTest) {
-  if (busy || (isTest ? testButton.disabled : saveButton.disabled)) return
-  const body = readDraft()
-  if (!body) return
-  if (!isTest && (body.key || !base.credentialConfigured || body.gatewayUrl !== base.gatewayUrl)
-    && (body.gatewayUrl !== tested?.gatewayUrl || (body.key ?? '') !== tested.key)) {
-    notice.textContent = '请先测试当前地址与 Key。'
-    controls()
-    return
-  }
-  if (isTest) tested = undefined
+async function mutate(body) {
+  if (busy || stale || !snapshot || conflict()) return
+  const previousDraft = draft()
+  confirmation = undefined
   busy = true
   controls()
-  notice.textContent = isTest ? '正在测试连接…' : '正在保存来源…'
+  notice.textContent = '正在提交来源变更…'
   try {
-    if (isTest) {
-      const result = await callSource('/test', body)
-      if (result?.status === 'ok') tested = { gatewayUrl: body.gatewayUrl, key: body.key ?? '' }
-      notice.textContent = tested ? '连接成功。' : `测试未通过。${failures.get(result?.failure?.code) ?? '请核对网关地址和 Key。'}`
-    } else {
-      const next = readSnapshot(await callSource('', body))
-      if (next.revision <= baseRevision) throw new Error()
-      present(next)
-      showEditor(body.id ? selected() : undefined)
-      notice.textContent = '来源已保存。'
-    }
+    const next = await callSource({ ...body, revision: baseRevision })
+    const source = body.action === 'create' ? next.sources.find(item => !snapshot.sources.some(old => old.id === item.id))
+      : next.sources.find(item => item.id === body.id)
+    if (next.revision === baseRevision || !source) throw new Error()
+    present(next)
+    showEditor(source)
+    const { rotation, ...settings } = previousDraft
+    if (body.action !== 'create' && body.action !== 'update') restore(settings)
+    if (rotation && body.action !== 'rotate') restore({ rotation })
+    notice.textContent = successText[body.action]
+    byId('source-title').focus()
   } catch (error) {
-    const status = error?.cause?.status
-    const code = error?.cause?.code
-    if (status === 409 || status === 404) {
+    const { status, code } = error?.cause ?? {}
+    if (code === 'source_revision_conflict' || code === 'source_not_found') {
       stale = true
       needsReview = true
       try { await loadSources() } catch {}
       notice.textContent = stale ? '来源配置已变化。请刷新后核对，草稿已保留。'
         : '来源配置已变化。请核对最新修订，草稿已保留。'
     } else if (status === 403) {
+      stale = true
       notice.textContent = '管理会话已失效。请从用量看板重新打开来源管理。'
-    } else if (status === 400) {
-      notice.textContent = code === 'key_required' ? '请重新输入此网关的专用只读 Key。'
-        : '请核对来源名称、网关地址及 Key。草稿已保留。'
-    } else if (isTest || code === 'source_save_failed') {
-      notice.textContent = isTest ? '测试暂时无法完成，请重试。' : '保存失败。草稿已保留，可重试。'
+    } else if (failures.has(code)) {
+      notice.textContent = failures.get(code)
     } else {
       stale = true
       needsReview = true
-      notice.textContent = '保存结果待确认。请刷新列表并核对，草稿已保留。'
+      notice.textContent = '提交结果待确认。请刷新列表并核对，草稿已保留。'
     }
   } finally {
     busy = false
@@ -251,49 +284,100 @@ async function submit(isTest) {
   }
 }
 
-function dispatchSubmit(event) {
-  event.preventDefault()
-  if (!saveButton.disabled) form.dispatchEvent(new Event('submit', { cancelable: true }))
+function digestFrom(field) {
+  const value = field.value.trim()
+  if (/^[0-9a-f]{64}$/i.test(value)) return value.toLowerCase()
+  notice.textContent = '请填写 64 位十六进制的令牌文件摘要。'
+  field.focus()
+}
+
+function confirm(body, text, trigger) {
+  if (trigger.disabled || trigger.hidden) return
+  confirmation = { body, trigger }
+  byId('confirmation-text').textContent = text
+  controls()
+  byId('cancel-action').focus()
+}
+
+function bindSubmit(target, button, submit) {
+  function dispatch(event) {
+    event.preventDefault()
+    if (!button.disabled) target.dispatchEvent(new Event('submit', { cancelable: true }))
+  }
+  button.addEventListener('click', dispatch)
+  target.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.isComposing && event.target.tagName === 'INPUT'
+      && event.target.type !== 'checkbox') dispatch(event)
+  })
+  target.addEventListener('submit', event => {
+    event.preventDefault()
+    if (!button.disabled) submit()
+  })
 }
 
 byId('refresh-sources').addEventListener('click', refresh)
-testButton.addEventListener('click', () => void submit(true))
-saveButton.addEventListener('click', dispatchSubmit)
-form.addEventListener('keydown', event => {
-  if (event.key === 'Enter' && !event.isComposing && event.target.tagName === 'INPUT'
-    && event.target.type !== 'checkbox') dispatchSubmit(event)
+bindSubmit(form, byId('save-source'), () => {
+  const name = fields.name.value.trim()
+  if (!name || [...name].length > 80 || /[\p{Cc}\p{Cf}]/u.test(name)) {
+    notice.textContent = '请填写 1 至 80 个字符的有效来源名称。'
+    fields.name.focus()
+    return
+  }
+  const enabled = fields.enabled.checked
+  if (base.id) {
+    const values = draft()
+    void mutate({ action: 'update', id: base.id, ...(values.name === undefined ? {} : { name }),
+      ...(values.enabled === undefined ? {} : { enabled }) })
+  } else {
+    const digest = digestFrom(fields.digest)
+    if (digest) void mutate({ action: 'create', name, digest, enabled })
+  }
 })
-form.addEventListener('submit', event => {
-  event.preventDefault()
-  void submit(false)
+bindSubmit(rotationForm, byId('rotate-source'), () => {
+  const digest = digestFrom(fields.rotation)
+  if (digest) void mutate({ action: 'rotate', id: base.id, digest })
 })
-for (const field of Object.values(fields)) {
-  field.addEventListener('input', () => {
-    if (field === fields.gatewayUrl || field === fields.key) {
-      tested = undefined
-      if (!conflict() && !stale) notice.textContent = ''
-    }
-    controls()
+for (const slot of ['current', 'pending', 'all']) {
+  const trigger = byId(`revoke-${slot}`)
+  trigger.addEventListener('click', () => {
+    const source = selected()
+    if (!source || source.isLocal) return
+    const result = slot === 'current' && source.credentials.pendingVerified ? '待用令牌将接替当前令牌。'
+      : slot === 'pending' ? '待用令牌将无法使用。' : '请在来源更新令牌后恢复上报。'
+    confirm({ action: 'revoke', id: source.id, slot }, `确认对「${source.name}」执行“${trigger.textContent}”？${result}`, trigger)
   })
 }
+byId('rebuild-source').addEventListener('click', () => {
+  const source = selected()
+  if (!rebuildAllowed(source)) return
+  confirm({ action: 'rebuild', id: source.id },
+    `确认「${source.name}」仍是原来源？重建将从本机可读历史回填，完成后切换看板数据。`, byId('rebuild-source'))
+})
+byId('cancel-action').addEventListener('click', () => {
+  const trigger = confirmation?.trigger
+  confirmation = undefined
+  controls()
+  trigger?.focus()
+})
+byId('confirm-action').addEventListener('click', () => {
+  if (confirmation && !byId('confirm-action').disabled) void mutate(confirmation.body)
+})
+for (const field of Object.values(fields)) field.addEventListener('input', controls)
 byId('reset-source').addEventListener('click', () => {
   if (busy || !snapshot) return
   showEditor()
+  controls()
   fields.name.focus()
 })
 byId('review-latest').addEventListener('click', () => {
   if (busy || stale || !conflict() || byId('review-latest').disabled) return
-  const value = draft()
-  const keepName = value.name !== base.name
-  const keepGateway = Boolean(value.key) || (gateway(value.gatewayUrl) || value.gatewayUrl) !== base.gatewayUrl
-  const keepEnabled = value.enabled !== base.enabled
-  showEditor(selected())
-  if (keepName) fields.name.value = value.name
-  if (keepGateway) fields.gatewayUrl.value = value.gatewayUrl
-  if (keepEnabled) fields.enabled.checked = value.enabled
-  fields.key.value = value.key
+  const previousDraft = draft()
+  const source = selected()
+  showEditor(source)
+  restore(previousDraft)
   notice.textContent = '已载入最新修订。请核对草稿。'
   controls()
-  fields.name.focus()
+  if (source?.isLocal) byId('source-title').focus()
+  else fields.name.focus()
 })
 void refresh()

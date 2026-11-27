@@ -13,33 +13,76 @@
   <main class="layout">
     <header class="page-header">
       <div>
-        <h1>用量汇总</h1>
-        <p class="muted" id="diagnostic-guide">在 Magpie Web 的插件页打开用量看板。</p>
+        <h1>Magpie Usage Hub</h1>
+        <p class="muted" id="diagnostic-guide">在 Magpie Web 的插件页打开后台诊断。</p>
       </div>
-      <a id="diagnostic-link" class="action-link" hidden>打开用量看板</a>
+      <a id="diagnostic-link" class="action-link" hidden>打开后台诊断</a>
     </header>
 
     <section class="panel" aria-labelledby="settings-title">
       <header class="section-header">
-        <h2 id="settings-title">中心设置</h2>
+        <h2 id="settings-title">插件设置</h2>
         <button id="reload-options" type="button">重新读取</button>
       </header>
-      <p id="migration-guide" class="feedback" hidden>检测到旧版启用配置。请在中心启用只读查询并保存，再到用量看板的「来源管理」登记远程来源。</p>
+      <p id="migration-guide" class="feedback" hidden>请为此实例选择新版角色并保存。在中心「来源管理」登记主动上报的来源。</p>
       <form id="settings-form" novalidate>
         <fieldset id="settings-fields" disabled aria-labelledby="settings-title">
           <label class="check-row" for="enabled">
             <input id="enabled" type="checkbox">
-            启用中心只读查询
+            启用此实例的插件
           </label>
           <div class="fields">
+            <div class="field">
+              <label for="role">实例角色</label>
+              <select id="role" aria-controls="center-fields sender-fields">
+                <option value="center">中心 · 接收和查询</option>
+                <option value="sender">来源 · 采集和上报</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="requestTimeoutSec">单次请求超时（秒）</label>
+              <input id="requestTimeoutSec" type="number" min="1" max="120" step="1" value="30" required>
+            </div>
+          </div>
+          <div id="center-fields" class="fields">
             <div class="field">
               <label for="centerGatewayUrl">中心本机网关</label>
               <input id="centerGatewayUrl" type="url" placeholder="http://127.0.0.1:3425" autocomplete="off" spellcheck="false" aria-describedby="gateway-hint">
               <small id="gateway-hint">填写中心宿主内的回环网关根地址。</small>
             </div>
             <div class="field">
-              <label for="requestTimeoutSec">单次请求超时（秒）</label>
-              <input id="requestTimeoutSec" type="number" min="1" max="120" step="1" value="30" required>
+              <label for="timeZone">看板时区</label>
+              <input id="timeZone" type="text" placeholder="Asia/Shanghai" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="ingestHost">接收监听地址</label>
+              <input id="ingestHost" type="text" placeholder="127.0.0.1" autocomplete="off" spellcheck="false" aria-describedby="ingest-hint">
+              <small id="ingest-hint">默认监听回环。Docker 发布的接收端口应绑定宿主的 WireGuard 地址。</small>
+            </div>
+            <div class="field">
+              <label for="ingestPort">接收端口</label>
+              <input id="ingestPort" type="number" min="1" max="65535" step="1" value="3494">
+            </div>
+          </div>
+          <div id="sender-fields" class="fields" hidden>
+            <div class="field">
+              <label for="sourceGatewayUrl">来源本机网关</label>
+              <input id="sourceGatewayUrl" type="url" placeholder="http://127.0.0.1:3425" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="field">
+              <label for="centerIngestUrl">中心接收地址</label>
+              <input id="centerIngestUrl" type="url" placeholder="http://198.51.100.1:3494" autocomplete="off" spellcheck="false" aria-describedby="center-ingest-hint">
+              <small id="center-ingest-hint">填写此实例经 WireGuard 可访问的中心接收根地址。</small>
+            </div>
+            <div class="field">
+              <label for="sourceId">来源 ID</label>
+              <input id="sourceId" type="text" autocomplete="off" spellcheck="false" maxlength="36" aria-describedby="source-id-hint">
+              <small id="source-id-hint">在中心「来源管理」登记后查看。</small>
+            </div>
+            <div class="field">
+              <label for="reportKeyFile">上报令牌文件</label>
+              <input id="reportKeyFile" type="text" autocomplete="off" spellcheck="false" aria-describedby="key-file-hint">
+              <small id="key-file-hint">填写本机受保护的令牌文件绝对路径。</small>
             </div>
           </div>
           <div class="actions">

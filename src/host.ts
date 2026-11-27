@@ -1,6 +1,8 @@
-import { mkdir, realpath } from 'node:fs/promises'
+import { lstat, mkdir, realpath } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { Diagnostics } from './diagnostics.ts'
 import { GatewayFailure, readGatewayPid } from './gateway/client.ts'
+import { isLoopback, readGatewayUrl } from './options.ts'
 import { StateError } from './state/errors.ts'
 import { tryAcquireSyncLock } from './state/lock.ts'
 
@@ -37,15 +39,30 @@ async function resolveStateDirectory(directory: string): Promise<string> {
   }
 }
 
+export async function preparePushDirectory(stateDirectory: string): Promise<string> {
+  const directory = join(stateDirectory, 'push')
+  try {
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    const stat = await lstat(directory)
+    if (!stat.isDirectory() || (process.platform !== 'win32' && (stat.mode & 0o077) !== 0)) throw new Error('invalid_directory')
+    return directory
+  } catch {
+    throw new StateError('state_directory_unavailable')
+  }
+}
+
 export async function acquireGatewayLock(
   stateDirectory: string, gateway: URL, timeoutMs: number, diagnostics: Diagnostics,
 ) {
   let directory: string | undefined
+  const hostAddress = process.env.MAGPIE_ADDR
+  const hostGateway = hostAddress ? readGatewayUrl(`http://${hostAddress}`) : undefined
+  const ownerGateway = hostGateway && isLoopback(hostGateway) ? hostGateway : gateway
   for (;;) {
     for (let failures = 0; ; failures += 1) {
       try {
         diagnostics.update({ lastAttemptAt: new Date().toISOString() })
-        await checkGatewayOwner(gateway, timeoutMs)
+        await checkGatewayOwner(ownerGateway, timeoutMs)
         break
       } catch (error) {
         await waitForRetry(error, failures, diagnostics)
@@ -53,7 +70,12 @@ export async function acquireGatewayLock(
     }
     directory ??= await resolveStateDirectory(stateDirectory)
     const lock = tryAcquireSyncLock(directory)
-    if (lock) return { directory, lock }
+    if (lock) return {
+      directory, lock,
+      async checkCollectionGateway() {
+        if (ownerGateway.href !== gateway.href) await checkGatewayOwner(gateway, timeoutMs)
+      },
+    }
     if (diagnostics.getStatus().phase !== 'waiting_lock') logRuntime({ status: 'waiting_for_lock' })
     diagnostics.update({ phase: 'waiting_lock', failure: null, retryAt: null })
     await Bun.sleep(1_000)

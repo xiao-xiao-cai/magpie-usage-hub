@@ -16,13 +16,14 @@ test('loopback status only reports migration and ready diagnostics and rejects f
     expect(response.headers.get('cache-control')).toBe('no-store')
     expect(await response.json()).toEqual({
       schema: 'magpie-usage-hub/status-v1', loadedRevision: revision, appliedRevision: null,
-      phase: 'migration_required', ready: false, failure: null, lastAttemptAt: null, retryAt: null,
+      phase: 'migration_required', role: null, syncPhase: null, ready: false, hasMore: false,
+      failure: null, lastAttemptAt: null, retryAt: null, lastPageAt: null, lastSyncedAt: null,
     })
     const write = await fetch(url, { method: 'POST' })
     expect(write.status).toBe(405)
     expect(write.headers.get('allow')).toBe('GET')
     expect((await fetch(url, { headers: { Origin: 'https://fixture-unrelated.example' } })).status).toBe(403)
-    for (const path of ['dashboard/', 'api/usage', 'api/sources', 'pull/sources.json']) {
+    for (const path of ['dashboard/', 'api/usage', 'api/usage/rows', 'api/sources', 'push/center.sqlite']) {
       expect((await fetch(new URL(path, server.url))).status).toBe(404)
     }
   } finally {
@@ -60,11 +61,24 @@ test('the center dashboard serves relative assets and read-only usage on loopbac
       await response.text()
     }
 
+    const token = /name="usage-query-token" content="([a-f0-9]{64})"/.exec(html)?.[1]
+    if (!token) throw new Error('dashboard did not provide a fixture token')
+    expect(page.headers.get('access-control-allow-origin')).toBeNull()
+    const authorized = { Origin: 'null', 'X-Magpie-Usage-Query': token }
     const api = new URL('../api/usage?period=7d', dashboard)
-    const response = await read(api, { headers: { Origin: 'null' } })
+    const details = new URL('../api/usage/rows?period=7d', dashboard)
+    for (const endpoint of [api, details]) {
+      const preflight = await fetch(endpoint, { method: 'OPTIONS', headers: { Origin: 'null' } })
+      expect(preflight.status).toBe(204)
+      expect(preflight.headers.get('access-control-allow-headers')).toBe('X-Magpie-Usage-Query')
+      expect((await read(endpoint, { headers: { Origin: 'null' } })).status).toBe(403)
+      expect((await read(endpoint, { headers: { 'X-Magpie-Usage-Admin': token } })).status).toBe(403)
+    }
+    const response = await read(api, { headers: authorized })
     expect(response.status).toBe(200)
     expect(response.headers.get('cache-control')).toBe('no-store')
     expect(await response.json()).toEqual({ period: '7d' })
+    expect((await read(details, { headers: authorized })).status).toBe(200)
     const post = await read(api, { method: 'POST' })
     expect(post.status).toBe(405)
     expect(post.headers.get('allow')).toBe('GET')
@@ -72,16 +86,16 @@ test('the center dashboard serves relative assets and read-only usage on loopbac
     expect(foreign.status).toBe(403)
     expect(foreign.headers.get('access-control-allow-origin')).toBeNull()
     expect((await read(api, { headers: { Host: 'fixture-unrelated.example' } })).status).toBe(403)
-    const unavailable = await read(new URL('../api/usage?period=fail', dashboard))
+    const unavailable = await read(new URL('../api/usage?period=fail', dashboard), { headers: authorized })
     expect(unavailable.status).toBe(503)
     expect(await unavailable.json()).toEqual({ error: { code: 'dashboard_unavailable' } })
-    expect(queried).toEqual(['/api/usage:7d', '/api/usage:fail'])
+    expect(queried).toEqual(['/api/usage:7d', '/api/usage/rows:7d', '/api/usage:fail'])
   } finally {
     await server.stop(true)
   }
 })
 
-test('source management and connection testing require the management page token', async () => {
+test('source management requires its management page token', async () => {
   const invoked: string[] = []
   const server = serveDiagnostics(createDiagnostics(revision), 0, undefined, request => {
     invoked.push(new URL(request.url).pathname)
@@ -101,7 +115,7 @@ test('source management and connection testing require the management page token
     if (!token) throw new Error('management page did not provide a fixture token')
     const allowed = { Origin: 'null', 'X-Magpie-Usage-Admin': token }
 
-    for (const path of ['api/sources', 'api/sources/test']) {
+    for (const path of ['api/sources']) {
       const preflight = await call(path, { Origin: 'null', 'Access-Control-Request-Method': 'POST' }, 'OPTIONS')
       expect(preflight.status).toBe(204)
       expect(preflight.headers.get('access-control-allow-headers')).toContain('X-Magpie-Usage-Admin')
@@ -109,13 +123,11 @@ test('source management and connection testing require the management page token
       expect((await call(path, { ...allowed, Origin: 'https://fixture-unrelated.example' })).status).toBe(403)
     }
     expect(invoked).toEqual([])
-    for (const path of ['api/sources', 'api/sources/test']) {
-      const saved = await call(path, allowed)
-      expect(saved.status).toBe(201)
-      expect(saved.headers.get('cache-control')).toBe('no-store')
-    }
+    const saved = await call('api/sources', allowed)
+    expect(saved.status).toBe(201)
+    expect(saved.headers.get('cache-control')).toBe('no-store')
     expect((await call('api/sources/pairing', allowed)).status).toBe(405)
-    expect(invoked).toEqual(['/api/sources', '/api/sources/test'])
+    expect(invoked).toEqual(['/api/sources'])
   } finally {
     await server.stop(true)
   }
