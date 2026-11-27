@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>用量概览 · Magpie Usage Hub</title>
-  <link rel="stylesheet" href="configuration.css">
+  <link rel="stylesheet" href="shared.css">
   <script defer src="_magpie/bridge.js"></script>
   <script defer src="entry.js"></script>
 </head>
-<body><main class="loading-shell" aria-label="用量概览">
-  <p id="loading-message" role="status">正在读取用量…</p>
+<body><main class="workspace" aria-label="用量概览">
+  <p id="loading-message" class="sr-only" role="status">正在读取用量…</p>
   <div id="loading-preview" aria-hidden="true">
+    <div class="page-toolbar"><span class="loading-tools"></span></div>
     <div class="loading-stats"><i></i><i></i><i></i><i></i></div>
     <div class="loading-trend"></div>
   </div>

@@ -15,7 +15,9 @@
   } else if (isCenter) {
     location.replace(`dashboard/${back}`)
   } else {
-    document.getElementById('entry-message').textContent = '中心用量暂不可用。可在配置中查看中心设置。'
+    const notice = document.getElementById('entry-message')
+    notice.textContent = '中心用量暂不可用。可在配置中查看中心设置。'
+    notice.className = 'loading-message'
     document.getElementById('loading-preview').hidden = true
     const configure = document.getElementById('configure')
     if (back) configure.href = `../../settings.html?${new URLSearchParams({ back })}`

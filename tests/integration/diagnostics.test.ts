@@ -30,6 +30,10 @@ test('loopback status only reports migration and ready diagnostics and rejects f
     expect(options.status).toBe(200)
     expect(options.headers.get('content-type')).toContain('text/javascript')
     expect(await options.text()).toBe(await Bun.file(new URL('../../page/options.js', import.meta.url)).text())
+    const styles = await fetch(new URL('shared.css', server.url))
+    expect(styles.status).toBe(200)
+    expect(styles.headers.get('content-type')).toContain('text/css')
+    expect(await styles.text()).toBe(await Bun.file(new URL('../../page/shared.css', import.meta.url)).text())
     for (const path of ['dashboard/', 'api/usage', 'api/usage/rows', 'api/sources', 'push/center.sqlite']) {
       expect((await fetch(new URL(path, server.url))).status).toBe(404)
     }

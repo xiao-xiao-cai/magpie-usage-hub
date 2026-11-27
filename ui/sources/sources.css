@@ -1,67 +1,32 @@
-.workspace { max-width: 76rem; }
-.workspace > header { margin-bottom: .75rem; }
-h1 { margin: 4px 0; font-size: 20px; }
-h2 { margin: 0; font-size: 15px; }
-.controls { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; }
-.panel + .panel { margin-block-start: 1rem; }
-.source-fields {
+.controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.panel + .panel { margin-block-start: 8px; }
+#editor fieldset {
   border: 0;
   min-inline-size: 0;
   padding: 0;
-  margin: .75rem 0 0;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: .75rem 1rem;
-  max-inline-size: 42rem;
+  margin: 8px 0 0;
 }
-
-.source-field { display: grid; gap: .25rem; min-width: 0; }
-.source-field input {
-  box-sizing: border-box;
-  min-width: 0;
-  width: 100%;
-  min-height: 2.15rem;
-  padding: .28rem .55rem;
-  background: var(--bg, Field);
-  color: var(--fg, FieldText);
-  border: 1px solid var(--line);
-  border-radius: .35rem;
-  font: inherit;
-}
-
-.source-check { align-self: start; display: flex; align-items: center; gap: .45rem; min-height: 2.15rem; margin-block-start: 1.7rem; }
-.source-check input { margin: 0; accent-color: var(--magpie-accent, AccentColor); }
-.full-width { grid-column: 1 / -1; }
-.source-fields small, .detail-meta, .notice { color: var(--muted); }
-.source-fields legend, .source-field label { font-weight: 600; }
-#receiver-fields { margin-top: .25rem; border-top: 1px solid var(--line); padding-top: .65rem; }
-#editor pre { overflow: auto; padding: .7rem; background: var(--bg); border-radius: .4rem; }
+.source-check { align-self: end; min-height: 27px; }
+.full-width, .source-actions { grid-column: 1 / -1; }
+#editor #receiver-fields { border-top: 1px solid var(--line-2); padding-top: 8px; }
+#receiver-fields legend { padding-inline: 0; }
+#editor pre { overflow: auto; padding: 8px 10px; background: var(--pill); border-radius: 8px; }
 #editor summary { cursor: pointer; }
-.windows-values { display: grid; grid-template-columns: max-content 1fr; gap: .55rem 1rem; }
+.windows-values { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; }
 .windows-values dt { font-weight: 600; }
 .windows-values dd { margin: 0; overflow-wrap: anywhere; }
-.detail-meta { display: block; font-size: .9em; }
-.table-scroll { overflow-x: auto; margin-block-start: .65rem; }
-#sources-table table { border-collapse: collapse; width: 100%; }
-#sources-table th, #sources-table td { text-align: start; padding: .55rem .65rem; border-bottom: 1px solid var(--line); }
-#sources-table thead th { color: var(--muted); font-weight: 500; }
-.source-actions { grid-column: 1 / -1; }
-.source-tools { margin-block-start: .8rem; }
-.source-tools h3 { margin: 0; font-size: 1rem; }
-.source-tools .source-actions { margin-top: .55rem; }
+.detail-meta { display: block; font-size: 10.5px; color: var(--muted); }
+#sources-table, .source-tools, .source-tools .source-actions { margin-block-start: 8px; }
 #rotation-form { align-items: end; }
-.confirmation { padding: .65rem .8rem; border: 1px solid var(--line); border-radius: .35rem; }
+.confirmation { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
 .confirmation p { margin-top: 0; }
-#sources-table table { min-width: 35rem; }
-#sources-table th[scope="row"], #sources-table td, #latest-source, #saved-receiver, #source-title, #source-identity { overflow-wrap: anywhere; }
-#sources-table th[scope="row"], #sources-table td { max-inline-size: 21rem; }
-button:disabled { cursor: default; color: GrayText; }
-.notice:empty { display: none; }
-main [hidden] { display: none; }
+#sources-table table { min-width: 560px; }
+#sources-table :is(th[scope="row"], td) { max-inline-size: 21rem; white-space: normal; }
+#sources-table :is(th[scope="row"], td), #latest-source, #saved-receiver, #source-title, #source-identity { overflow-wrap: anywhere; }
+.notice { margin: 0; font-size: 11px; color: var(--muted); }
+.notice:not(:empty) { margin-block-start: 8px; }
 
-@media (max-width: 37rem) {
-  .source-fields { grid-template-columns: 1fr; }
-  .source-check { margin-block-start: 0; }
-  .windows-values { grid-template-columns: 1fr; gap: .2rem; }
-  .windows-values dd { margin-bottom: .4rem; }
+@media (max-width: 600px) {
+  .windows-values { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .windows-values dd { margin-bottom: 6px; }
 }

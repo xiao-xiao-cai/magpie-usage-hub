@@ -1,6 +1,8 @@
 (() => {
   function fallback(message) {
-    document.getElementById('loading-message').textContent = message
+    const notice = document.getElementById('loading-message')
+    notice.textContent = message
+    notice.className = 'loading-message'
     document.getElementById('loading-preview').hidden = true
     document.getElementById('settings-link').hidden = false
   }

@@ -32,7 +32,7 @@
 
 ### Windows 隔离实例
 
-在专用 PowerShell 终端执行下面的命令。路径均从一个新建的临时目录派生，测试网关使用 `3499`，管理 Web 使用 `3498`。使用安装版时，Magpie 在 Windows 以 `USERPROFILE` 为 home，并用 `XDG_CONFIG_HOME` 和 `XDG_CACHE_HOME` 设置自己的目录。便携版的 `data` 目录优先，测试可另准备便携副本。涉及第三方 Agent、二进制依赖或 OAuth 时，在临时用户、虚拟机或测试容器中运行，尤其要隔离已设置的 Agent 专用配置环境变量和系统凭据。
+在专用 PowerShell 终端执行下面的命令。路径均从一个新建的临时目录派生，测试网关使用 `3499`。本仓库的本地开发和测试 Web 预览固定使用 `http://127.0.0.1:3498/`。使用安装版时，Magpie 在 Windows 以 `USERPROFILE` 为 home，并用 `XDG_CONFIG_HOME` 和 `XDG_CACHE_HOME` 设置自己的目录。便携版的 `data` 目录优先，测试可另准备便携副本。涉及第三方 Agent、二进制依赖或 OAuth 时，在临时用户、虚拟机或测试容器中运行，尤其要隔离已设置的 Agent 专用配置环境变量和系统凭据。
 
 ```powershell
 $magpieDevRoot = Join-Path ([IO.Path]::GetTempPath()) ('magpie-dev-' + [guid]::NewGuid().ToString('N'))
@@ -48,6 +48,15 @@ magpie --version
 ```
 
 在这个终端里安装测试插件、启动测试 Web。`magpie web` 默认打开带管理鉴权的浏览器链接。检查启动输出中的网关端口和配置目录，确认用的是新实例。换个普通终端即可回到日常环境。Linux 和 macOS 可以按官方示例为进程设置独立的 `HOME`、`XDG_CONFIG_HOME`、`XDG_CACHE_HOME` 和回环端口。[官方隔离测试示例](https://usemagpie.ai/docs/plugins#test) · [Windows home 规则](https://github.com/yetone/magpie/blob/v0.1.4783/internal/appdir/env.go) · [配置目录和便携模式](https://github.com/yetone/magpie/blob/v0.1.4783/internal/appdir/appdir.go)
+
+需要预览 Usage Hub 时，在已配置隔离环境的终端中，从本仓库根目录运行：
+
+```powershell
+magpie plugin add (Get-Location).Path
+magpie web --addr 127.0.0.1:3498 --gateway
+```
+
+在浏览器的「插件」中打开 Usage Hub。查看完毕后，在启动预览的终端按 `Ctrl+C` 停止。
 
 ## 3. 第一个插件：今日用量页面
 
