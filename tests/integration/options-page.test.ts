@@ -30,10 +30,10 @@ type PageOptions = {
 const source = readFileSync(new URL('../../page/options.js', import.meta.url), 'utf8')
 const page = runInNewContext(`${source}\nusageHubOptions`, { crypto, URL, URLSearchParams, Intl }) as PageOptions
 const revisionOne = '11111111-1111-4111-8111-111111111111'
-const settings = { role: 'center', enabled: true, centerGatewayUrl: 'http://127.0.0.1:3425/',
+const settings = { enabled: true, centerGatewayUrl: 'http://127.0.0.1:3425/',
   ingestHost: '127.0.0.1', ingestPort: 3494, timeZone: 'Asia/Shanghai', requestTimeoutSec: 30,
 }
-const original = { ...settings, collectionMode: 'push', configRevision: revisionOne }
+const original = { ...settings, collectionMode: 'otlp', role: 'center', configRevision: revisionOne }
 
 function harness(initial: Options = original) {
   let stored: Options = { ...initial }
@@ -68,14 +68,12 @@ function harness(initial: Options = original) {
 
 describe('plugin Options page', () => {
   test('defaults to a disabled center and validates its gateway, listener and time zone', () => {
-    const defaults = { ...settings, enabled: false, ingestPort: '3494', requestTimeoutSec: '30',
-      sourceGatewayUrl: 'http://127.0.0.1:3425/', centerIngestUrl: '', sourceId: '', reportKeyFile: '',
-    }
+    const defaults = { ...settings, enabled: false, ingestPort: '3494', requestTimeoutSec: '30' }
     expect(page.settingsView({})).toEqual(defaults)
     expect(page.settingsView({ collectionMode: 'pull', role: 'center', enabled: true })).toEqual(defaults)
     expect(page.settingsView(original)).toEqual({ ...defaults, enabled: true })
     const draft = { ...settings, centerGatewayUrl: 'http://[::1]:3425', ingestHost: '::', requestTimeoutSec: 60 }
-    expect(page.settingsPatch(draft)).toEqual({ ...draft, collectionMode: 'push', centerGatewayUrl: 'http://[::1]:3425/' })
+    expect(page.settingsPatch(draft)).toEqual({ ...draft, collectionMode: 'otlp', role: 'center', centerGatewayUrl: 'http://[::1]:3425/' })
     for (const url of ['https://other.example/', 'http://127.0.0.1/?', 'http://127.0.0.1/#',
       'http://127.0.0.1/anything/..', 'http://@127.0.0.1', 'ftp://127.0.0.1/']) {
       expect(() => page.settingsPatch({ ...draft, centerGatewayUrl: url })).toThrow(/回环网关根地址/)
@@ -88,26 +86,20 @@ describe('plugin Options page', () => {
     expect(() => page.settingsPatch({ ...draft, timeZone: 'Fixture/Unknown' })).toThrow(/时区/)
   })
 
-  test('validates and saves the Windows sender fields and shows their readback', async () => {
-    const draft = { role: 'sender', enabled: true, sourceGatewayUrl: 'http://127.0.0.1:3425',
-      centerIngestUrl: 'http://198.51.100.1:3494', sourceId: 'b49664b2-d102-4e01-93b0-a67d696bd618',
-      reportKeyFile: String.raw`C:\Magpie\usage-hub\report-key.txt`, requestTimeoutSec: 30,
+  test('uses saved center values on upgrade and confirms an OTLP settings write', async () => {
+    const legacyCenter = { ...original, collectionMode: 'push', centerGatewayUrl: 'http://127.0.0.1:3567/',
+      ingestHost: '0.0.0.0', ingestPort: 4318, timeZone: 'UTC', requestTimeoutSec: 10,
     }
-    expect(() => page.settingsPatch({ ...draft, sourceGatewayUrl: draft.centerIngestUrl })).toThrow(/回环/)
-    expect(() => page.settingsPatch({ ...draft, centerIngestUrl: `${draft.centerIngestUrl}/checkpoint` })).toThrow(/中心接收根地址/)
-    expect(() => page.settingsPatch({ ...draft, sourceId: 'local' })).toThrow(/来源 ID/)
-    expect(() => page.settingsPatch({ ...draft, reportKeyFile: 'report-key.txt' })).toThrow(/完整路径/)
-    const patch = page.settingsPatch(draft)
-    expect(patch).toEqual({ ...draft, collectionMode: 'push', sourceGatewayUrl: `${draft.sourceGatewayUrl}/`,
-      centerIngestUrl: `${draft.centerIngestUrl}/`,
+    const view = page.settingsView(legacyCenter)
+    expect(view).toEqual({ ...settings, centerGatewayUrl: legacyCenter.centerGatewayUrl,
+      ingestHost: '0.0.0.0', ingestPort: '4318', timeZone: 'UTC', requestTimeoutSec: '10',
     })
-    const ui = harness({})
+    const patch = page.settingsPatch({ ...view, ingestPort: 4318, requestTimeoutSec: 10 })
+    const ui = harness(legacyCenter)
     await ui.refresh()
     await ui.submit(patch)
-    expect(ui.last).toMatchObject({ result: 'confirmed', saved: patch })
-    expect(page.settingsView(ui.last.saved!)).toMatchObject({ ...draft, sourceGatewayUrl: `${draft.sourceGatewayUrl}/`,
-      centerIngestUrl: `${draft.centerIngestUrl}/`, requestTimeoutSec: '30',
-    })
+    expect(ui.last).toMatchObject({ result: 'confirmed', saved: { ...patch, collectionMode: 'otlp' } })
+    expect(page.settingsView(ui.last.saved!)).toEqual(view)
   })
 
   test('opens the service root before navigating to the requested dashboard', () => {
@@ -117,7 +109,9 @@ describe('plugin Options page', () => {
     expect(page.pageServiceLink(service, pageUrl, original)).toBe(`${service}#revision=${revisionOne}&view=dashboard`)
     expect(page.pageServiceLink(service, pageUrl, { enabled: true })).toBe(service)
     expect(page.pageServiceLink(service, pageUrl, { ...original, enabled: false })).toBe(`${service}#revision=${revisionOne}`)
-    expect(page.pageServiceLink(service, pageUrl, { ...original, role: 'sender' })).toBe(`${service}#revision=${revisionOne}`)
+    const legacySender = { ...original, collectionMode: 'push', role: 'sender', reportKeyFile: '/fixture/key.txt' }
+    expect(page.pageServiceLink(service, pageUrl, legacySender)).toBe(`${service}#revision=${revisionOne}`)
+    expect(page.settingsView(legacySender)).toEqual(page.settingsView({ ...original, enabled: false }))
     expect(page.pageServiceLink('', pageUrl, original)).toBe('')
     expect(page.pageServiceLink(service, 'https://elsewhere.example/', original)).toBe('')
   })
@@ -194,7 +188,7 @@ describe('plugin Options page', () => {
     await different.refresh()
     different.afterWrite(() => different.update({ requestTimeoutSec: 40 }))
     await different.submit({ requestTimeoutSec: 20 })
-    expect(different.last).toMatchObject({ result: 'readback_mismatch', saved: original, differences: ['单次请求超时'] })
+    expect(different.last).toMatchObject({ result: 'readback_mismatch', saved: original, differences: ['本机网关请求超时'] })
   })
 
   test('retries a failed readback with a single write', async () => {

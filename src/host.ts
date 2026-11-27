@@ -39,7 +39,7 @@ async function resolveStateDirectory(directory: string): Promise<string> {
   }
 }
 
-export async function preparePushDirectory(stateDirectory: string): Promise<string> {
+export async function prepareLedgerDirectory(stateDirectory: string): Promise<string> {
   const directory = join(stateDirectory, 'push')
   try {
     await mkdir(directory, { recursive: true, mode: 0o700 })

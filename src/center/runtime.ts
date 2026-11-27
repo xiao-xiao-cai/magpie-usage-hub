@@ -1,12 +1,10 @@
 import { join } from 'node:path'
 import { createDiagnostics, type Diagnostics } from '../diagnostics.ts'
-import { ReportingFailure, type ReportingTarget } from '../gateway/reporting.ts'
-import { acquireGatewayLock, logRuntime, preparePushDirectory, reportBlocked } from '../host.ts'
+import { acquireGatewayLock, logRuntime, prepareLedgerDirectory, reportBlocked } from '../host.ts'
 import type { CenterOptions } from '../options.ts'
-import { pageBodyLimit } from '../sync/protocol.ts'
-import { runSynchronization } from '../sync/runner.ts'
+import { ReportingFailure, runSynchronization, type ReportingTarget } from '../sync/runner.ts'
 import { createDashboard } from './dashboard.ts'
-import { createIngest } from './ingest.ts'
+import { createIngest, maximumOtlpBodyBytes } from './ingest.ts'
 import { CenterFailure, openCenterLedger } from './ledger.ts'
 import { createSourceManagement } from './sources.ts'
 
@@ -30,12 +28,12 @@ export async function runCenter(stateDirectory: string, options: CenterOptions, 
 
   let close: (() => void) | undefined
   try {
-    const directory = await preparePushDirectory(owner.directory)
+    const directory = await prepareLedgerDirectory(owner.directory)
     const ledger = openCenterLedger(join(directory, 'center.sqlite'))
     close = () => ledger.db.close()
     const receiver = Bun.serve({
       hostname: options.ingestHost, port: options.ingestPort, fetch: createIngest(ledger),
-      maxRequestBodySize: pageBodyLimit, idleTimeout: 15, development: false,
+      maxRequestBodySize: maximumOtlpBodyBytes, idleTimeout: 15, development: false,
     })
     receiver.unref()
     close = () => {
@@ -59,7 +57,7 @@ export async function runCenter(stateDirectory: string, options: CenterOptions, 
     void runSynchronization({ ...options, sourceId }, async () => {
       await owner.checkCollectionGateway()
       return local
-    }, collectorStatus, () => {})
+    }, collectorStatus)
     return {
       dashboard: createDashboard(ledger, options.timeZone),
       manage: createSourceManagement(ledger),

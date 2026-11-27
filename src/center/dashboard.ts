@@ -23,16 +23,20 @@ const emptyTotals: Totals = {
   calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0,
   cost: 0, unpriced: 0, cacheUnknownCalls: 0,
 }
-const metricsSql = `
-  COALESCE(SUM(1 - handed_on), 0) AS calls,
-  COALESCE(SUM(input), 0) AS input,
-  COALESCE(SUM(output), 0) AS output,
-  COALESCE(SUM(cache_read), 0) AS cacheRead,
-  COALESCE(SUM(cache_write), 0) AS cacheWrite,
-  COALESCE(SUM(reasoning), 0) AS reasoning,
-  COALESCE(SUM(CASE WHEN input + output > 0 THEN cost END), 0) AS cost,
-  COALESCE(SUM(CASE WHEN input + output > 0 AND cost IS NULL THEN 1 ELSE 0 END), 0) AS unpriced,
-  COALESCE(SUM(cache_unknown), 0) AS cacheUnknownCalls`
+function metricsSql(transport: SourceStatus['transport']) {
+  const cost = transport === 'otlp' ? 'cost' : 'CASE WHEN input + output > 0 THEN cost END'
+  const tokens = transport === 'otlp' ? 'input + output + cache_read + cache_write' : 'input + output'
+  return `
+    COALESCE(SUM(1 - handed_on), 0) AS calls,
+    COALESCE(SUM(input), 0) AS input,
+    COALESCE(SUM(output), 0) AS output,
+    COALESCE(SUM(cache_read), 0) AS cacheRead,
+    COALESCE(SUM(cache_write), 0) AS cacheWrite,
+    COALESCE(SUM(reasoning), 0) AS reasoning,
+    COALESCE(SUM(${cost}), 0) AS cost,
+    COALESCE(SUM(CASE WHEN ${tokens} > 0 AND cost IS NULL THEN 1 ELSE 0 END), 0) AS unpriced,
+    COALESCE(SUM(cache_unknown), 0) AS cacheUnknownCalls`
+}
 
 function readQueryTimestamp(value: string | null) {
   if (value === null || /\.\d{3}\d*[1-9]\d*(?:Z|[+-]\d{2}:\d{2})$/u.test(value)) return null
@@ -45,7 +49,7 @@ function readQuery(params: URLSearchParams, calendar: ReturnType<typeof createCa
   const via = params.get('via')
   if (sourceId !== null && sourceId !== 'local' && !readSourceId(sourceId)) return null
   if (model !== null && (model.length > 512 || /[\u0000-\u001f\u007f]/u.test(model))) return null
-  if (via !== null && via !== 'through' && via !== 'direct') return null
+  if (via !== null && via !== 'through' && via !== 'direct' && via !== 'session') return null
 
   const period = params.get('period')
   if (params.has('from') || params.has('to')) {
@@ -73,7 +77,9 @@ function dimensionFilter(query: Query) {
 }
 
 function freshness(source: SourceStatus, now: number) {
+  if (source.transport === 'legacy') return 'historical'
   if (!source.enabled || source.phase === 'paused') return 'paused'
+  if (source.transport === 'otlp') return source.lastPageAt === null ? 'waiting' : 'receiving'
   if (source.phase === 'recovery_required' || source.phase === 'rebuilding') return source.phase
   if (source.lastSeenAt === null) return 'new'
   if (now - Date.parse(source.lastSeenAt) > staleAfterMs) return 'offline'
@@ -83,8 +89,8 @@ function freshness(source: SourceStatus, now: number) {
 }
 
 function describeSource(source: SourceStatus, now: number) {
-  const { id, name, enabled, isLocal, phase, hasMore, lastSeenAt, lastSyncedAt, lastPageAt, recoveryReason, gap } = source
-  return { id, name, enabled, isLocal, phase, hasMore, lastSeenAt, lastSyncedAt, lastPageAt, recoveryReason, gap,
+  const { id, name, enabled, isLocal, transport, phase, hasMore, lastSeenAt, lastSyncedAt, lastPageAt, recoveryReason, gap } = source
+  return { id, name, enabled, isLocal, transport, phase, hasMore, lastSeenAt, lastSyncedAt, lastPageAt, recoveryReason, gap,
     hasPublishedData: source.activeGeneration !== null, freshness: freshness(source, now) }
 }
 
@@ -100,13 +106,14 @@ function summarizeSource(db: CenterLedger['db'], source: SourceStatus, query: Qu
   const filter = dimensionFilter(query)
   const scopedRows = `FROM usage_rows WHERE source_id = ? AND generation = ? AND time_ms >= ? AND time_ms < ?${filter.sql}`
   const values = [source.id, generation, query.range.from, query.range.to, ...filter.values]
-  const totals = db.query<Totals, Binding[]>(`SELECT ${metricsSql} ${scopedRows}`).get(...values) ?? emptyTotals
+  const metrics = metricsSql(source.transport)
+  const totals = db.query<Totals, Binding[]>(`SELECT ${metrics} ${scopedRows}`).get(...values) ?? emptyTotals
   const models = db.query<Totals & { model: string }, Binding[]>(`
-    SELECT model, ${metricsSql} ${scopedRows} GROUP BY model ORDER BY calls DESC, model
+    SELECT model, ${metrics} ${scopedRows} GROUP BY model ORDER BY calls DESC, model
   `).all(...values).map(({ model, ...modelTotals }) => ({ model, totals: modelTotals }))
   const buckets = intervals.length === 0 ? [] : db.query<Totals & { fromMs: number; toMs: number }, Binding[]>(`
     WITH bounds (from_ms, to_ms) AS (VALUES ${intervals.map(() => '(?, ?)').join(', ')})
-    SELECT from_ms AS fromMs, to_ms AS toMs, ${metricsSql}
+    SELECT from_ms AS fromMs, to_ms AS toMs, ${metrics}
     FROM bounds LEFT JOIN usage_rows ON source_id = ? AND generation = ?
       AND time_ms >= from_ms AND time_ms < to_ms${filter.sql}
     GROUP BY from_ms, to_ms ORDER BY from_ms

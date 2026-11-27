@@ -13,7 +13,7 @@ assert(archiveArg && executableArg, 'Pass the candidate npm archive and installe
 const archive = resolve(archiveArg)
 const executable = resolve(executableArg)
 assert(archive.endsWith('.tgz') && executable.toLowerCase().endsWith('magpie.exe'))
-const work = resolve(import.meta.dir, '../../.magpie-dev/phase7-host')
+const work = resolve(import.meta.dir, '../../.magpie-dev/otlp-host')
 await mkdir(work, { recursive: true })
 const stage = await mkdtemp(join(work, 'session-'))
 const packageRoot = join(stage, 'package')
@@ -25,6 +25,7 @@ const model = `${provider}/phase4-fixture-v1`
 const queryHeader = 'X-Magpie-Usage-Query'
 const adminHeader = 'X-Magpie-Usage-Admin'
 const loopback = (port: number) => `http://127.0.0.1:${port}`
+const directModel = 'usage-hub-otlp-session'
 
 type Page = { name: string; spec: string; url: string; service: string }
 type Profile = Awaited<ReturnType<typeof makeProfile>>
@@ -35,7 +36,7 @@ type NativeUsage = { through: NativeTotals; direct: NativeTotals }
 type Detail = { sourceId: string; t: string; model: string; via: string; input: number; output: number }
 type Totals = { calls: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; unpriced: number }
 type Summary = { id: string; totals: Totals; buckets: { from: string; to: string; totals: Totals }[] }
-type Source = { id: string; isLocal: boolean; credentials: { current: boolean } }
+type Source = { id: string; isLocal: boolean; transport: string; phase: string; credentials: { current: boolean } }
 
 async function makeProfile(name: string, gatewayPort: number, webPort: number) {
   const directory = join(stage, name)
@@ -52,7 +53,7 @@ async function makeProfile(name: string, gatewayPort: number, webPort: number) {
   const codexDirectory = join(directory, 'home', '.codex')
   Object.assign(env, {
     MAGPIE_ADDR: `127.0.0.1:${gatewayPort}`, MAGPIE_BUN: process.execPath,
-    MAGPIE_NAME: `Usage Hub phase 7 ${name}`, MAGPIE_WEB_KEY: webKey,
+    MAGPIE_NAME: `Usage Hub OTLP ${name}`, MAGPIE_WEB_KEY: webKey,
     MAGPIE_NO_ACCOUNTS: '1', NO_PROXY: '127.0.0.1,localhost', CODEX_HOME: codexDirectory,
   })
   return { name, directory, env, gatewayPort, webPort, webKey, codexDirectory, gateway: loopback(gatewayPort), web: loopback(webPort),
@@ -124,7 +125,7 @@ async function launchHost(profile: Profile) {
     { cwd: profile.directory, env: profile.env })
 }
 
-async function openHost(profile: Profile): Promise<WebPage> {
+async function signIn(profile: Profile) {
   const identity = await waitFor(`${profile.name} gateway did not open`, 20_000, async () => {
     return json<{ pid: number; version: string }>(await request(`${profile.gateway}/`), 'isolated gateway identity')
   })
@@ -138,12 +139,17 @@ async function openHost(profile: Profile): Promise<WebPage> {
   const cookie = login.headers.getSetCookie()[0]?.split(';')[0]
   assert(cookie, `${profile.name} Web login did not set a cookie`)
   const pages = await json<Page[]>(await request(`${profile.web}/api/plugin-pages`, { headers: { Cookie: cookie } }), 'plugin pages')
+  return { cookie, pages, version: identity.version }
+}
+
+async function openCenter(profile: Profile): Promise<WebPage> {
+  const { cookie, pages, version } = await signIn(profile)
   const page = pages.find(record => record.name === 'magpie-usage-hub')
   assert(page?.url && page.service, `${profile.name} missing installed plugin page or service route`)
   const pageUrl = new URL(page.url, profile.web)
   const proxy = new URL(page.service, pageUrl)
   assert(pageUrl.origin === profile.web && proxy.origin === profile.web, `${profile.name} page route origin mismatch`)
-  const web = { page, cookie, pageUrl, proxy, version: identity.version }
+  const web = { page, cookie, pageUrl, proxy, version }
   await warmPage(web)
   return web
 }
@@ -153,9 +159,9 @@ async function warmPage(web: WebPage) {
   assert(html.ok && /<html\b/iu.test(await html.text()), 'installed plugin page did not load')
 }
 
-async function showLocalSessions(web: WebPage) {
-  const settings = await request(new URL('/api/settings/gateway-mode', web.proxy), {
-    method: 'POST', headers: { Cookie: web.cookie, 'Content-Type': 'application/json' },
+async function showLocalSessions(web: string, cookie: string) {
+  const settings = await request(new URL('/api/settings/gateway-mode', web), {
+    method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
     body: JSON.stringify({ mode: 'off' }),
   })
   assert(settings.ok, `isolated local session visibility: HTTP ${settings.status}`)
@@ -173,8 +179,7 @@ async function assertOptions(web: WebPage, expected: Record<string, unknown>, sa
   assert(Object.entries(expected).every(([name, value]) => actual[name] === value), 'native Options readback mismatch')
 }
 
-async function seedDirectSession(profile: Profile) {
-  const time = Date.now() - 60_000
+async function seedDirectSession(profile: Profile, time: number, sessionModel = directModel) {
   const timestamp = new Date(time).toISOString()
   const started = new Date(time - 1_000).toISOString()
   const directory = join(profile.codexDirectory, 'sessions', ...timestamp.slice(0, 10).split('-'))
@@ -183,7 +188,7 @@ async function seedDirectSession(profile: Profile) {
   const turnId = 'fixture-turn'
   const events = [
     { timestamp: started, type: 'session_meta', payload: { id, session_id: id, source: 'cli' } },
-    { timestamp: started, type: 'turn_context', payload: { turn_id: turnId, model: 'usage-hub-phase7-direct', effort: 'low' } },
+    { timestamp: started, type: 'turn_context', payload: { turn_id: turnId, model: sessionModel, effort: 'low' } },
     { timestamp, type: 'token_usage_record', payload: { response_id: `fixture-${id}`, session_id: id, thread_id: id, turn_id: turnId,
       usage: { input_tokens: 7, cached_input_tokens: 2, cache_write_input_tokens: 0, output_tokens: 2,
         reasoning_output_tokens: 0, total_tokens: 9 } } },
@@ -193,7 +198,7 @@ async function seedDirectSession(profile: Profile) {
     { encoding: 'utf8', flag: 'wx' })
 }
 
-async function addModelCall(profile: Profile, key: string, throughCalls: number) {
+async function addModelCall(profile: Profile, key: string, throughCalls: number, directCalls = 1) {
   const response = await request(`${profile.gateway}/v1/chat/completions`, {
     method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Usage Hub isolated acceptance' }], stream: false }),
@@ -202,10 +207,10 @@ async function addModelCall(profile: Profile, key: string, throughCalls: number)
   await response.body?.cancel()
   return waitFor(`${profile.name} native ledger did not record fixture call`, 10_000, async () => {
     const totals = await json<NativeUsage>(await request(`${profile.gateway}/v1/magpie/usage/requests?computer=this&period=7d&offset=0&limit=1`), 'native totals')
-    if (totals.through.calls !== throughCalls || totals.direct.calls !== 1) return
+    if (totals.through.calls !== throughCalls || totals.direct.calls !== directCalls) return
     const feed = await json<{ rows: NativeRow[]; has_more: boolean }>(await request(`${profile.gateway}/v1/magpie/usage/requests?cursor=start&limit=100`), 'native changes')
     const rows = feed.rows.filter(row => !row.computer && (row.origin === 'gateway' || row.origin === 'session'))
-    if (rows.length === throughCalls + 1 && !feed.has_more) return { totals, rows }
+    if (rows.length === throughCalls + directCalls && !feed.has_more) return { totals, rows }
   })
 }
 
@@ -289,7 +294,7 @@ async function reconcile(center: Awaited<ReturnType<typeof centerPages>>, source
   'center rows differ from native original times, model or Token counts')
 }
 
-const [center, sender] = await Promise.all([makeProfile('center', 35107, 35207), makeProfile('sender', 35108, 35208)])
+const [center, source] = await Promise.all([makeProfile('center', 35107, 35207), makeProfile('source', 35108, 35208)])
 let fixture: ChildProcess | undefined
 let relay: Bun.Server<undefined> | undefined
 try {
@@ -301,18 +306,18 @@ try {
   }
   await exec('tar.exe', ['-xf', archive, '-C', stage], { windowsHide: true })
   const manifest = await Bun.file(join(packageRoot, 'package.json')).json()
-  assert(manifest.name === 'magpie-usage-hub' && manifest.version === '0.6.0' && manifest.magpie.page.service.port === diagnosticPort,
+  assert(manifest.name === 'magpie-usage-hub' && manifest.version === '0.7.0' && manifest.magpie.page.service.port === diagnosticPort,
     'unexpected plugin candidate manifest')
   const archiveHash = createHash('sha256').update(new Uint8Array(await Bun.file(archive).arrayBuffer())).digest('hex')
-  for (const port of [diagnosticPort, ingestPort, providerPort, center.gatewayPort, center.webPort, sender.gatewayPort, sender.webPort]) {
+  for (const port of [diagnosticPort, ingestPort, providerPort, center.gatewayPort, center.webPort, source.gatewayPort, source.webPort]) {
     assert(await portFree(port), `isolated port ${port} is occupied`)
   }
   fixture = spawnQuiet(process.execPath, [join(import.meta.dir, 'fixture-provider.ts'), String(providerPort)])
   await waitFor('fixture model provider did not open', 10_000, async () => (await request(`${loopback(providerPort)}/v1/models`)).ok ? true : undefined)
-  const [centerModelKey, senderModelKey] = await Promise.all([center, sender].map(async profile => {
-    await seedDirectSession(profile)
+  await cli(center, 'plugin', 'add', packageRoot)
+  const [centerModelKey, sourceModelKey] = await Promise.all([center, source].map(async profile => {
+    await seedDirectSession(profile, Date.now() - 60_000, 'usage-hub-before-export')
     await cli(profile, 'sessions', 'read', 'on', 'codex')
-    await cli(profile, 'plugin', 'add', packageRoot)
     await cli(profile, 'provider', 'add', provider, `url=${loopback(providerPort)}/v1`, 'key=synthetic-provider-key', 'models=phase4-fixture-v1', 'list=off')
     const issued = JSON.parse(await cli(profile, 'gateway-key', 'issue', '--ttl', '2h', '--name', 'Usage Hub isolated model', '--models', model, '--json'))
     assert(typeof issued.key === 'string', `${profile.name} model key issuance failed`)
@@ -320,11 +325,11 @@ try {
   }))
 
   await launchHost(center)
-  const centerWeb = await openHost(center)
+  const centerWeb = await openCenter(center)
   assert((await options(centerWeb)).enabled !== true, 'center installation enabled reporting by default')
-  await showLocalSessions(centerWeb)
+  await showLocalSessions(center.web, centerWeb.cookie)
   const centerNative = await addModelCall(center, centerModelKey, 1)
-  const centerOptions = { enabled: true, collectionMode: 'push', role: 'center', centerGatewayUrl: center.gateway,
+  const centerOptions = { enabled: true, collectionMode: 'otlp', role: 'center', centerGatewayUrl: center.gateway,
     requestTimeoutSec: 3, ingestHost: '127.0.0.1', ingestPort, timeZone: 'Asia/Shanghai', configRevision: crypto.randomUUID() }
   await assertOptions(centerWeb, centerOptions, true)
   await warmPage(centerWeb)
@@ -333,105 +338,115 @@ try {
   await waitFor('center native call did not reach the center ledger', 15_000,
     async () => (await dashboard.summary('local')).totals.calls === 2 ? true : undefined)
   await reconcile(dashboard, 'local', centerNative)
-  const unauthorized = await request(`${loopback(ingestPort)}/v1/usage-hub/checkpoint`)
+  const receiver = `${loopback(ingestPort)}/v1/traces`
+  const unauthorized = await request(receiver, { method: 'POST' })
   assert(unauthorized.status === 401, 'receiver accepted a missing reporting credential')
 
-  let online = true
-  let failedRequests = 0
-  let acknowledgedPages = 0
+  let retryBatch: string | undefined
+  let simulateFailure = false
+  let attempts = 0
+  let retryCompleted = false
   relay = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(input) {
-    const { pathname } = new URL(input.url)
-    if (!pathname.startsWith('/v1/usage-hub/')) return new Response(null, { status: 404 })
-    if (!online) {
-      failedRequests += 1
-      return new Response(null, { status: 503 })
-    }
+    if (new URL(input.url).pathname !== '/v1/traces' || input.method !== 'POST') return new Response(null, { status: 404 })
     const headers = new Headers()
     for (const name of ['Authorization', 'Content-Type']) {
       const value = input.headers.get(name)
       if (value) headers.set(name, value)
     }
-    const response = await request(new URL(pathname, loopback(ingestPort)), {
-      method: input.method, headers, body: input.method === 'POST' ? await input.arrayBuffer() : undefined,
-    })
-    if (response.ok && pathname === '/v1/usage-hub/pages') acknowledgedPages += 1
+    const body = await input.arrayBuffer()
+    if (simulateFailure) {
+      const digest = createHash('sha256').update(new Uint8Array(body)).digest('hex')
+      retryBatch ??= digest
+      if (digest === retryBatch) {
+        attempts += 1
+        if (attempts === 1) return new Response(null, { status: 503 })
+      }
+    }
+    const response = await request(receiver, { method: 'POST', headers, body })
+    if (simulateFailure && response.ok) {
+      if (attempts === 2) {
+        await response.body?.cancel()
+        return new Response(null, { status: 503 })
+      }
+      if (attempts === 3) retryCompleted = true
+    }
     return response
   } })
   assert(relay.port, 'isolated receiver relay did not obtain a port')
 
   const reportKey = randomBytes(32).toString('hex')
-  const reportKeyFile = join(sender.directory, 'report.key')
-  await writeFile(reportKeyFile, reportKey, { encoding: 'ascii', flag: 'wx', mode: 0o600 })
   const before = await dashboard.manage()
   const digest = createHash('sha256').update(reportKey, 'ascii').digest('hex')
   const registered = await dashboard.manage({ action: 'create', name: 'Isolated Windows sender', digest, revision: before.revision })
-  const source = registered.sources.find(item => !item.isLocal)
-  assert(source?.credentials.current, 'registered source did not configure the reporting key')
+  const registeredSource = registered.sources.find(item => !item.isLocal)
+  assert(registeredSource?.credentials.current && registeredSource.transport === 'otlp' && registeredSource.phase === 'waiting',
+    'registered source did not configure the reporting key')
   assert(!JSON.stringify(registered).includes(reportKey) && !JSON.stringify(registered).includes(digest), 'source credential escaped management')
-  const sourceId = source.id
+  const sourceId = registeredSource.id
 
-  await launchHost(sender)
-  const senderWeb = await openHost(sender)
-  assert((await options(senderWeb)).enabled !== true, 'sender installation enabled reporting by default')
-  await showLocalSessions(senderWeb)
-  const initial = await addModelCall(sender, senderModelKey, 1)
-  const senderOptions = { enabled: true, collectionMode: 'push', role: 'sender', sourceGatewayUrl: sender.gateway,
-    centerIngestUrl: loopback(relay.port), sourceId, reportKeyFile, requestTimeoutSec: 3, configRevision: crypto.randomUUID() }
-  await assertOptions(senderWeb, senderOptions, true)
-  await assertOptions(senderWeb, senderOptions)
-  await warmPage(senderWeb)
-  await waitFor('Windows sender did not report its initial native call', 20_000,
+  await launchHost(source)
+  const sourceWeb = await signIn(source)
+  assert(sourceWeb.pages.every(page => page.name !== 'magpie-usage-hub'), 'source registered a Usage Hub plugin')
+  await showLocalSessions(source.web, sourceWeb.cookie)
+  const otel = { enabled: true, endpoint: loopback(relay.port), headers: { Authorization: `Bearer ${reportKey}` },
+    metrics: false, sessions: true, bodies: false, bodiesWhole: false }
+  const saved = await json<{ otel: typeof otel }>(await request(`${source.web}/api/settings`, {
+    method: 'POST', headers: { Cookie: sourceWeb.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ otel }),
+  }), 'native Observability preferences')
+  assert(saved.otel?.enabled && saved.otel.endpoint === otel.endpoint && saved.otel.sessions && !saved.otel.bodies,
+    'native Observability readback differs')
+
+  await addModelCall(source, sourceModelKey, 1)
+  await seedDirectSession(source, Date.now())
+  await waitFor('native gateway and session generations did not reach the center', 25_000,
     async () => (await dashboard.summary(sourceId)).totals.calls === 2 ? true : undefined)
-  await reconcile(dashboard, sourceId, initial)
+  const rows = await dashboard.rows(sourceId)
+  const gatewayRow = rows.find(row => row.via === 'through')
+  const sessionRow = rows.find(row => row.via === 'session')
+  assert(gatewayRow && gatewayRow.model.endsWith('phase4-fixture-v1') && gatewayRow.input === 3 && gatewayRow.output === 1,
+    'gateway attempt tokens or model differ')
+  assert(sessionRow?.model === directModel && sessionRow.input === 5 && sessionRow.output === 2,
+    'session exporter did not send the new local generation')
+  assert(rows.every(row => row.sourceId === sourceId), 'unexpected remote source attribution')
 
-  online = false
-  const disconnectedAt = new Date().toISOString()
-  const accumulated = await addModelCall(sender, senderModelKey, 2)
-  await waitFor('sender did not attempt reporting while disconnected', 75_000, async () => failedRequests ? true : undefined)
-  await reconcile(dashboard, sourceId, initial)
-  await reconcile(dashboard, 'local', centerNative)
-  online = true
-  const reconnectedAt = new Date().toISOString()
-  await waitFor('sender did not catch up after transport recovery', 30_000,
-    async () => (await dashboard.summary(sourceId)).totals.calls === 3 ? true : undefined)
-  await reconcile(dashboard, sourceId, accumulated)
+  simulateFailure = true
+  const callStartedAfter = Date.now()
+  await addModelCall(source, sourceModelKey, 2, 2)
+  const callRecordedBy = Date.now()
+  await waitFor('native retry after the temporary failure and repeated commit did not succeed', 25_000,
+    async () => retryCompleted ? true : undefined)
+  const retriedRows = await dashboard.rows(sourceId)
+  assert(retriedRows.length === 3, 'retry duplicated or dropped the generation')
+  const retried = retriedRows.find(row => row.via === 'through' && row.t !== gatewayRow.t)
+  assert(retried && Date.parse(retried.t) >= callStartedAfter && Date.parse(retried.t) <= callRecordedBy,
+    'retry lost original call time')
+  const originalTime = Date.parse(retried.t)
+  const filtered = await dashboard.summary(sourceId, { from: new Date(originalTime).toISOString(),
+    to: new Date(originalTime + 1).toISOString(), model: retried.model, via: 'through', bucket: 'hour' })
+  assert(filtered.totals.calls === 1 && filtered.buckets.length === 1 && filtered.buckets[0].totals.calls === 1,
+    'custom range and hourly bucket did not retain the retried call')
 
-  const [first, second] = accumulated.rows.filter(row => row.origin === 'gateway').map(row => Date.parse(row.t)).sort((left, right) => left - right)
-  assert(first < second, 'fixture request timestamps are indistinct')
-  const preceding = await dashboard.summary(sourceId, { from: new Date(first).toISOString(), to: new Date(second).toISOString(), via: 'through' })
-  const caughtUp = await dashboard.summary(sourceId, { from: new Date(second).toISOString(), to: new Date(second + 1).toISOString(),
-    via: 'through', bucket: 'hour' })
-  assert(preceding.totals.calls === 1 && caughtUp.totals.calls === 1 && caughtUp.buckets.length === 1
-    && caughtUp.buckets[0].totals.calls === 1, 'half-open time range or original time bucket did not retain the catch-up call')
-
-  await stopHost(sender)
+  await stopHost(source)
   await stopHost(center, true)
   await launchHost(center)
   await waitFor('cold center receiver did not start before page access', 20_000,
-    async () => (await request(`${loopback(ingestPort)}/v1/usage-hub/checkpoint`)).status === 401 ? true : undefined)
-  const reopened = await openHost(center)
+    async () => (await request(receiver, { method: 'POST' })).status === 401 ? true : undefined)
+  const reopened = await openCenter(center)
   await assertOptions(reopened, centerOptions)
   const restored = await centerPages(reopened, centerOptions.configRevision)
   const sources = (await restored.manage()).sources
-  assert(sources.some(item => item.id === sourceId && item.credentials.current), 'cold restart lost source registration')
+  assert(sources.some(item => item.id === sourceId && item.credentials.current && item.phase === 'receiving'), 'cold restart lost source registration')
   await reconcile(restored, 'local', centerNative)
-  await reconcile(restored, sourceId, accumulated)
-  const beforeRestart = acknowledgedPages
-  await launchHost(sender)
-  await waitFor('cold sender did not use its saved checkpoint before page access', 20_000,
-    async () => acknowledgedPages > beforeRestart ? true : undefined)
-  const restartedSender = await openHost(sender)
-  await assertOptions(restartedSender, senderOptions)
-  await reconcile(restored, sourceId, accumulated)
+  assert.deepEqual(await restored.rows(sourceId), retriedRows, 'cold restart lost remote history')
 
   console.log(JSON.stringify({ archiveVersion: manifest.version, archiveHash, bun: Bun.version,
-    centerMagpie: centerWeb.version, senderMagpie: senderWeb.version, hostMode: 'serve --web',
-    nativeOptions: true, proxyAuthorization: true, proxyPreflight: true, receiverAuthorization: true,
-    disconnectedAt, reconnectedAt, failedRequests, persistedHistory: true, nativeTotalsAndTimestamps: true,
-    sourceCalls: 3, centerCalls: 2, directCallsPerSource: 1, duplicateCalls: 0, originalTimeBucket: true, coldRestartBeforePageAccess: true }))
+    centerMagpie: centerWeb.version, sourceMagpie: sourceWeb.version, hostMode: 'serve --web',
+    nativeObservability: true, sourceUsageHubInstalled: false, proxyAuthorization: true, proxyPreflight: true,
+    receiverAuthorization: true, attempts, persistedHistory: true, initialSourceGatewaySpans: 1, sourceSessionSpans: 1,
+    sourceUsageRows: retriedRows.length, centerCalls: 2, duplicateRows: 0, originalTimeBucket: true, coldCenterBeforePageAccess: true }))
 } finally {
   try {
-    await stopHost(sender)
+    await stopHost(source)
   } finally {
     try {
       await stopHost(center, true)

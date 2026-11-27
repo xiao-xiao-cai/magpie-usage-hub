@@ -15,7 +15,7 @@ const failures = new Map([
   ['invalid_source', '请核对来源设置。草稿已保留。'],
   ['credential_in_use', '该摘要已登记。请为此来源生成不同的令牌。'],
   ['pending_key_exists', '已有待用令牌。请刷新并核对上报状态。'],
-  ['pending_key_unverified', '请先在来源启用待用令牌，认证成功后再撤销当前令牌。'],
+  ['pending_key_unverified', '请先用待用令牌成功上报用量，再撤销当前令牌。'],
   ['source_rebuild_not_required', '来源的重建状态已变化。请刷新后核对。'],
   ['source_save_failed', '操作失败。草稿已保留，可重试。'],
 ])
@@ -59,7 +59,7 @@ function readSnapshot(value) {
   if (typeof value?.revision !== 'string' || !value.revision || !Array.isArray(value.sources)) throw new Error()
   for (const source of value.sources) {
     if (typeof source?.id !== 'string' || typeof source.name !== 'string' || typeof source.enabled !== 'boolean'
-      || typeof source.isLocal !== 'boolean' || typeof source.credentials?.current !== 'boolean'
+      || !['local', 'legacy', 'otlp'].includes(source.transport) || typeof source.credentials?.current !== 'boolean'
       || typeof source.credentials.pending !== 'boolean' || typeof source.credentials.pendingVerified !== 'boolean') throw new Error()
   }
   return value
@@ -81,20 +81,22 @@ async function callSource(body) {
 }
 
 function credentialLabel(source) {
-  if (source.isLocal) return '中心本机'
+  if (source.transport !== 'otlp') return '—'
   const { current, pending, pendingVerified } = source.credentials
-  if (pending) return pendingVerified ? '待用令牌已认证，可撤销原令牌' : '等待待用令牌认证'
+  if (pending) return pendingVerified ? '已收到新令牌上报，可撤销原令牌' : '等待新令牌上报用量'
   return current ? '已登记' : '待登记'
 }
 
 function rebuildAllowed(source) {
-  return source && (source.rebuildAllowed ?? source.phase === 'recovery_required')
+  return source?.transport === 'local' && (source.rebuildAllowed ?? source.phase === 'recovery_required')
 }
 
 function controls() {
   const latest = selected()
-  const local = Boolean(latest?.isLocal)
-  const remote = Boolean(latest && !local)
+  const local = latest?.transport === 'local'
+  const historical = latest?.transport === 'legacy'
+  const otlp = latest?.transport === 'otlp'
+  const editable = !base.id || otlp
   const blocked = busy || stale || !snapshot || conflict()
   const editing = Boolean(base.id)
   const { name, enabled, digest, rotation } = draft()
@@ -102,25 +104,26 @@ function controls() {
 
   byId('refresh-sources').disabled = busy
   byId('sources-section').setAttribute('aria-busy', String(busy))
-  form.hidden = local
+  form.hidden = !editable
   form.setAttribute('aria-busy', String(busy))
-  byId('source-fields').disabled = busy || !snapshot || local
+  byId('source-fields').disabled = busy || !snapshot || !editable
   byId('create-credential').hidden = editing
-  byId('save-source').disabled = blocked || Boolean(confirmation) || local
+  byId('save-source').disabled = blocked || Boolean(confirmation) || !editable
     || (name === undefined && enabled === undefined && !digest)
-  byId('source-identity').hidden = !remote
-  byId('source-id').textContent = remote ? latest.id : ''
+  byId('source-identity').hidden = !latest || local
+  byId('source-id').textContent = latest && !local ? latest.id : ''
   byId('local-source-hint').hidden = !local
-  byId('source-credentials').hidden = !remote
-  byId('credential-status').textContent = remote ? credentialLabel(latest) : ''
+  byId('historical-source-hint').hidden = !historical
+  byId('source-credentials').hidden = !otlp
+  byId('credential-status').textContent = otlp ? credentialLabel(latest) : ''
   rotationForm.hidden = Boolean(credential?.pending && !rotation)
   fields.rotation.disabled = busy
   byId('rotate-source').textContent = credential?.current ? '登记新令牌' : '登记令牌'
-  byId('rotate-source').disabled = blocked || Boolean(confirmation) || !remote || Boolean(credential?.pending) || !rotation
-  byId('revoke-current').hidden = !credential?.current
+  byId('rotate-source').disabled = blocked || Boolean(confirmation) || !otlp || Boolean(credential?.pending) || !rotation
+  byId('revoke-current').hidden = !otlp || !credential?.current
   byId('revoke-current').disabled = blocked || Boolean(confirmation) || Boolean(credential?.pending && !credential.pendingVerified)
-  byId('revoke-pending').hidden = !credential?.pending
-  byId('revoke-all').hidden = !credential?.current || !credential?.pending
+  byId('revoke-pending').hidden = !otlp || !credential?.pending
+  byId('revoke-all').hidden = !otlp || !credential?.current || !credential?.pending
   byId('revoke-pending').disabled = blocked || Boolean(confirmation)
   byId('revoke-all').disabled = blocked || Boolean(confirmation)
   byId('recovery-tools').hidden = !rebuildAllowed(latest)
@@ -130,12 +133,12 @@ function controls() {
   byId('cancel-action').disabled = busy
   byId('reset-source').hidden = !editing && name === undefined && enabled === undefined && !digest
   byId('reset-source').disabled = busy
-  byId('reset-source').textContent = editing ? '返回添加来源' : '清空草稿'
+  byId('reset-source').textContent = editing ? '返回添加 OTLP 来源' : '清空草稿'
   byId('revision-review').hidden = stale || !conflict()
   byId('review-latest').disabled = busy || Boolean(editing && !latest)
   byId('latest-source').textContent = latest
-    ? `当前已保存为「${latest.name}」，同步${latest.enabled ? '已启用' : '已暂停'}。${credentialLabel(latest)}。`
-    : editing ? '当前来源已不存在。可返回添加来源。' : '来源列表已更新，请核对后继续。'
+    ? `当前已保存为「${latest.name}」，${sourceStatus(latest)}。${otlp ? `${credentialLabel(latest)}。` : ''}`
+    : editing ? '当前来源已不存在。可返回添加 OTLP 来源。' : '来源列表已更新，请核对后继续。'
 }
 
 function showEditor(source = newSource) {
@@ -143,7 +146,8 @@ function showEditor(source = newSource) {
   baseRevision = snapshot.revision
   needsReview = false
   confirmation = undefined
-  byId('source-title').textContent = source.isLocal ? source.name : source.id ? `编辑来源 · ${source.name}` : '添加来源'
+  byId('source-title').textContent = !source.id ? '添加 OTLP 来源'
+    : source.transport === 'otlp' ? `编辑来源 · ${source.name}` : source.name
   restore({ name: source.name, enabled: source.enabled, digest: '', rotation: '' })
   notice.textContent = ''
 }
@@ -163,11 +167,13 @@ function appendNote(cell, text) {
   cell.append(note)
 }
 
-function syncLabel(source) {
+function sourceStatus(source) {
+  if (source.transport === 'legacy') return '历史来源'
   if (!source.enabled) return '已暂停'
+  if (source.transport === 'otlp') return source.phase === 'receiving' ? '已收到用量' : '等待首次上报'
   if (source.phase === 'recovery_required') return '待确认重建'
   if (source.phase === 'rebuilding') return '重建中'
-  if (!source.lastSeenAt) return source.isLocal ? '等待首次采集' : '等待来源认证'
+  if (!source.lastSeenAt) return '等待首次采集'
   if (Date.now() - Date.parse(source.lastSeenAt) > 180_000) return '暂失联'
   if (source.phase === 'backfill') return '正在回填历史'
   return source.hasMore ? '追赶中' : '已同步'
@@ -176,18 +182,22 @@ function syncLabel(source) {
 function rowFor(source) {
   const row = document.createElement('tr')
   appendCell(row, source.name, true)
-  const status = appendCell(row, syncLabel(source))
-  const reason = recoveryText.get(source.recoveryReason)
+  const status = appendCell(row, sourceStatus(source))
+  const reason = source.transport === 'local' && recoveryText.get(source.recoveryReason)
   if (reason) appendNote(status, reason)
   if (source.gap?.missingRows > 0) appendNote(status, `上次重建未找到 ${source.gap.missingRows} 条旧记录`)
-  const contact = appendCell(row, source.lastSeenAt ? dateTime.format(Date.parse(source.lastSeenAt)) : '暂无')
-  if (source.lastSyncedAt) appendNote(contact, `最近完成 ${dateTime.format(Date.parse(source.lastSyncedAt))}`)
-  if (source.lastPageAt) appendNote(contact, `最近确认页 ${dateTime.format(Date.parse(source.lastPageAt))}`)
+  if (source.transport === 'otlp') {
+    appendCell(row, source.lastPageAt ? `最近接收 ${dateTime.format(Date.parse(source.lastPageAt))}` : '暂无')
+  } else {
+    const contact = appendCell(row, source.lastSeenAt ? dateTime.format(Date.parse(source.lastSeenAt)) : '暂无')
+    if (source.lastSyncedAt) appendNote(contact, `最近完成 ${dateTime.format(Date.parse(source.lastSyncedAt))}`)
+    if (source.lastPageAt) appendNote(contact, `最近确认页 ${dateTime.format(Date.parse(source.lastPageAt))}`)
+  }
   appendCell(row, credentialLabel(source))
   const actions = appendCell(row, '')
   const button = document.createElement('button')
   button.type = 'button'
-  button.textContent = source.isLocal ? '查看' : '编辑'
+  button.textContent = source.transport === 'otlp' ? '编辑' : '查看'
   button.setAttribute('aria-label', `${button.textContent} ${source.name}`)
   button.addEventListener('click', () => {
     if (busy) return
@@ -199,8 +209,8 @@ function rowFor(source) {
       showEditor(source)
       controls()
     }
-    if (source.isLocal) byId('source-title').focus()
-    else fields.name.focus()
+    if (source.transport === 'otlp') fields.name.focus()
+    else byId('source-title').focus()
   })
   actions.append(button)
   return row
@@ -287,7 +297,7 @@ async function mutate(body) {
 function digestFrom(field) {
   const value = field.value.trim()
   if (/^[0-9a-f]{64}$/i.test(value)) return value.toLowerCase()
-  notice.textContent = '请填写 64 位十六进制的令牌文件摘要。'
+  notice.textContent = '请填写 64 位十六进制的令牌摘要。'
   field.focus()
 }
 
@@ -341,7 +351,7 @@ for (const slot of ['current', 'pending', 'all']) {
   const trigger = byId(`revoke-${slot}`)
   trigger.addEventListener('click', () => {
     const source = selected()
-    if (!source || source.isLocal) return
+    if (source?.transport !== 'otlp') return
     const result = slot === 'current' && source.credentials.pendingVerified ? '待用令牌将接替当前令牌。'
       : slot === 'pending' ? '待用令牌将无法使用。' : '请在来源更新令牌后恢复上报。'
     confirm({ action: 'revoke', id: source.id, slot }, `确认对「${source.name}」执行“${trigger.textContent}”？${result}`, trigger)
@@ -377,7 +387,7 @@ byId('review-latest').addEventListener('click', () => {
   restore(previousDraft)
   notice.textContent = '已载入最新修订。请核对草稿。'
   controls()
-  if (source?.isLocal) byId('source-title').focus()
+  if (source && source.transport !== 'otlp') byId('source-title').focus()
   else fields.name.focus()
 })
 void refresh()

@@ -65,7 +65,7 @@
   font-weight: 600;
 }
 
-.field > input, .field > select {
+.field > input {
   min-width: 0;
   min-height: 34px;
   box-sizing: border-box;

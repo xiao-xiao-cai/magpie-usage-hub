@@ -1,12 +1,16 @@
 import { createHash } from 'node:crypto'
-import { ingestPaths, pageBodyLimit, ProtocolFailure, readPageSubmission, readRecoveryReport } from '../sync/protocol.ts'
-import { failure, jsonReply, readJsonBody } from './http.ts'
-import { CenterFailure, type CenterLedger } from './ledger.ts'
+import { failure, jsonReply, readBoundedJson } from './http.ts'
+import { CenterFailure } from './ledger.ts'
+import { OtlpParseFailure, readOtlpTraces, type OtlpRow } from './otlp.ts'
 
-const { checkpoint: checkpointPath, pages: pagesPath, recovery: recoveryPath } = ingestPaths
-const recoveryBytes = 4096
+export const maximumOtlpBodyBytes = 4 * 1024 * 1024
 const maxConcurrentSubmissions = 16
 const maxConcurrentPerSource = 2
+
+type IngestLedger = {
+  authenticateOtlp(digest: string): string
+  commitOtlp(digest: string, rows: readonly OtlpRow[], sourceId: string): void
+}
 
 function digestOf(request: Request): string {
   const match = request.headers.get('Authorization')?.match(/^(\S+) ([0-9a-f]{64})$/u)
@@ -14,22 +18,22 @@ function digestOf(request: Request): string {
   return createHash('sha256').update(match[2], 'ascii').digest('hex')
 }
 
-export function createIngest(ledger: CenterLedger) {
+export function createIngest(ledger: IngestLedger) {
   const inFlight = new Map<string, number>()
   let pending = 0
 
   return async function ingest(request: Request): Promise<Response> {
     const { pathname, search } = new URL(request.url)
-    if (search || (pathname !== checkpointPath && pathname !== pagesPath && pathname !== recoveryPath)) {
-      return failure(404, 'ingest_route_not_found')
-    }
-    const method = pathname === checkpointPath ? 'GET' : 'POST'
-    if (request.method !== method) return new Response(null, { status: 405, headers: { Allow: method } })
+    if (search || pathname !== '/v1/traces') return failure(404, 'ingest_route_not_found')
+    if (request.method !== 'POST') return new Response(null, { status: 405, headers: { Allow: 'POST' } })
 
     try {
       const digest = digestOf(request)
-      if (pathname === checkpointPath) return jsonReply(ledger.nodeCheckpoint(digest))
-      const sourceId = ledger.authenticate(digest)
+      const sourceId = ledger.authenticateOtlp(digest)
+      const encoding = request.headers.get('content-encoding')?.trim().toLowerCase()
+      if (!/^application\/json(?:\s*;|$)/iu.test(request.headers.get('content-type') ?? '')
+        || (encoding && encoding !== 'identity')) return failure(415, 'unsupported_media_type')
+
       const active = inFlight.get(sourceId) ?? 0
       if (pending >= maxConcurrentSubmissions || active >= maxConcurrentPerSource) {
         return failure(429, 'ingest_rate_limited')
@@ -37,12 +41,16 @@ export function createIngest(ledger: CenterLedger) {
       inFlight.set(sourceId, active + 1)
       pending += 1
       try {
-        const page = pathname === pagesPath
-        const body = await readJsonBody(request, page ? pageBodyLimit : recoveryBytes)
-        if (body instanceof Response) return body
-        return jsonReply(page
-          ? ledger.commit(readPageSubmission(body.value), digest)
-          : ledger.recover(readRecoveryReport(body.value), digest))
+        let payload: unknown
+        try {
+          payload = await readBoundedJson(request, maximumOtlpBodyBytes)
+        } catch (error) {
+          return error instanceof RangeError ? failure(413, 'otlp_body_too_large') : failure(400, 'invalid_otlp_traces')
+        }
+        const { rows, rejectedSpans } = readOtlpTraces(payload)
+        if (rejectedSpans > 0 && rows.length === 0) return failure(400, 'invalid_otlp_traces')
+        ledger.commitOtlp(digest, rows, sourceId)
+        return jsonReply(rejectedSpans === 0 ? {} : { partialSuccess: { rejectedSpans: String(rejectedSpans) } })
       } finally {
         pending -= 1
         const remaining = (inFlight.get(sourceId) ?? 1) - 1
@@ -51,7 +59,7 @@ export function createIngest(ledger: CenterLedger) {
       }
     } catch (error) {
       if (error instanceof CenterFailure) return failure(error.httpStatus, error.code)
-      if (error instanceof ProtocolFailure) return failure(400, error.code)
+      if (error instanceof OtlpParseFailure) return failure(400, 'invalid_otlp_traces')
       return failure(503, 'ingest_unavailable')
     }
   }

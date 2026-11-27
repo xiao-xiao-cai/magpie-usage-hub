@@ -3,10 +3,11 @@ import { createHash } from 'node:crypto'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { createIngest } from '../../src/center/ingest.ts'
+import { createDashboard } from '../../src/center/dashboard.ts'
 import { type CenterLedger, openCenterLedger } from '../../src/center/ledger.ts'
+import type { OtlpRow } from '../../src/center/otlp.ts'
 import { createSourceManagement } from '../../src/center/sources.ts'
-import type { Checkpoint, PageReceipt, PageSubmission, UsageRow } from '../../src/sync/protocol.ts'
+import type { Checkpoint, PageSubmission, UsageRow } from '../../src/sync/protocol.ts'
 
 const keyA = 'a'.repeat(64)
 const keyB = 'b'.repeat(64)
@@ -20,11 +21,10 @@ function digest(key: string): string {
   return createHash('sha256').update(key, 'ascii').digest('hex')
 }
 
-function request(path: string, body?: object, key?: string): Request {
+function request(path: string, body?: object): Request {
   return new Request(`http://127.0.0.1${path}`, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-      ...(key === undefined ? {} : { Authorization: `Bearer ${key}` }) },
+    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
     body: body === undefined ? null : JSON.stringify(body),
   })
 }
@@ -35,10 +35,16 @@ function createSource(ledger: CenterLedger, name: string, key: string): string {
   return result.sources.find(source => source.name === name)!.id
 }
 
+const fixtureRow = { rowKey, t: recent, via: 'through', model: 'synthetic-model', handedOn: false,
+  input: 8, output: 12, cacheRead: 0, cacheWrite: 0, reasoning: 0, cacheUnknown: false,
+  cost: 0, status: 200, durationMs: 100 } as const
+
 function row(seq: number, patch: Partial<UsageRow> = {}): UsageRow {
-  return { seq, rowKey, t: recent, via: 'through', model: 'synthetic-model', handedOn: false,
-    input: 8, output: 12, cacheRead: 0, cacheWrite: 0, reasoning: 0, cacheUnknown: false,
-    cost: 0, status: 200, durationMs: 100, ...patch }
+  return { ...fixtureRow, seq, ...patch }
+}
+
+function otlpRow(patch: Partial<OtlpRow> = {}): OtlpRow {
+  return { ...fixtureRow, ...patch }
 }
 
 function page(checkpoint: Checkpoint, position: number, upserts: UsageRow[] = [], hasMore = false): PageSubmission {
@@ -56,7 +62,6 @@ test('management serializes revisions and confirms a replacement key before prom
   const ledger = openCenterLedger(':memory:')
   try {
     const manage = createSourceManagement(ledger)
-    const ingest = createIngest(ledger)
     const endpoint = '/api/sources'
     const get = async () => await (await manage(request(endpoint))).json()
     const draft = { revision: (await get()).revision, action: 'create', name: '合成 Windows', digest: digest(keyA).toUpperCase() }
@@ -67,7 +72,8 @@ test('management serializes revisions and confirms a replacement key before prom
     expect(savedText).not.toContain(keyA)
     expect(savedText).not.toContain('activeGeneration')
     const { sources } = JSON.parse(savedText)
-    expect(sources).toMatchObject([{ id: 'local', isLocal: true }, { name: draft.name, isLocal: false, phase: 'backfill',
+    expect(sources).toMatchObject([{ id: 'local', isLocal: true, transport: 'local' },
+      { name: draft.name, isLocal: false, transport: 'otlp', phase: 'waiting',
       credentials: { current: true, pending: false, pendingVerified: false } }])
     const id = sources[1].id
     const edit = async (action: object) => manage(request(endpoint, { revision: (await get()).revision, ...action }))
@@ -77,128 +83,123 @@ test('management serializes revisions and confirms a replacement key before prom
     expect((await get()).sources).toHaveLength(2)
 
     expect((await edit({ action: 'rotate', id, digest: digest(keyNext) })).status).toBe(200)
+    expect(ledger.authenticateOtlp(digest(keyNext))).toBe(id)
+    ledger.commitOtlp(digest(keyNext), [])
+    expect((await get()).sources[1]).toMatchObject({ phase: 'waiting', lastSeenAt: null, lastPageAt: null,
+      credentials: { current: true, pending: true, pendingVerified: false } })
     expect((await edit({ action: 'revoke', id, slot: 'current' })).status).toBe(409)
-    const accepted = await ingest(request('/v1/usage-hub/checkpoint', undefined, keyNext))
-    expect(await accepted.json()).toMatchObject({ sourceId: id, cursor: 'start' })
-    expect((await get()).sources[1]).toMatchObject({ lastSeenAt: expect.any(String),
+    ledger.commitOtlp(digest(keyNext), [otlpRow()])
+    expect((await get()).sources[1]).toMatchObject({ phase: 'receiving', lastSeenAt: expect.any(String),
+      lastPageAt: expect.any(String), lastSyncedAt: null,
       credentials: { current: true, pending: true, pendingVerified: true } })
     expect((await edit({ action: 'revoke', id, slot: 'current' })).status).toBe(200)
-    expect((await ingest(request('/v1/usage-hub/checkpoint', undefined, keyA))).status).toBe(401)
-    expect((await ingest(request('/v1/usage-hub/checkpoint', undefined, keyNext))).status).toBe(200)
+    expect(() => ledger.authenticateOtlp(digest(keyA))).toThrow('report_key_invalid')
+    expect(ledger.authenticateOtlp(digest(keyNext))).toBe(id)
     expect((await edit({ action: 'update', id, name: '合成新名称', enabled: false })).status).toBe(200)
-    const paused = await (await ingest(request('/v1/usage-hub/checkpoint', undefined, keyNext))).json() as Checkpoint
-    expect(paused).toMatchObject({ sourceId: id, cursor: 'start', phase: 'paused' })
-    const rejected = await ingest(request('/v1/usage-hub/pages', page(paused, 1), keyNext))
-    expect(rejected.status).toBe(403)
-    expect(await rejected.json()).toEqual({ error: { code: 'source_paused' } })
+    expect((await get()).sources[1]).toMatchObject({ id, phase: 'paused' })
+    expect(() => ledger.authenticateOtlp(digest(keyNext))).toThrow('source_paused')
+    expect(() => ledger.commitOtlp(digest(keyNext), [otlpRow()])).toThrow('source_paused')
     expect((await edit({ action: 'revoke', id, slot: 'all' })).status).toBe(200)
-    expect((await ingest(request('/v1/usage-hub/checkpoint', undefined, keyNext))).status).toBe(401)
+    expect(() => ledger.authenticateOtlp(digest(keyNext))).toThrow('report_key_invalid')
+    expect(visibleRows(ledger, id)).toHaveLength(1)
   } finally {
     ledger.db.close()
   }
 })
 
-test('ingest authenticates before parsing and isolates simultaneous sources and retries', async () => {
+test('OTLP retries preserve the first snapshot and isolate identical span identifiers by source', () => {
   const ledger = openCenterLedger(':memory:')
   try {
     const sourceA = createSource(ledger, 'Windows A', keyA)
     const sourceB = createSource(ledger, 'Windows B', keyB)
-    const ingest = createIngest(ledger)
-    const path = '/v1/usage-hub/pages'
-    const unauthenticated = new Request(`http://127.0.0.1${path}`, { method: 'POST', body: 'not json' })
-    expect((await ingest(unauthenticated)).status).toBe(401)
-    expect(unauthenticated.bodyUsed).toBe(false)
-    const oversized = new Request(`http://127.0.0.1${path}`, { method: 'POST', body: '{}', headers: {
-      Authorization: `Bearer ${keyA}`, 'Content-Type': 'application/json', 'Content-Length': '1048577',
-    } })
-    expect((await ingest(oversized)).status).toBe(413)
-
-    const checkpointA = ledger.checkpoint(sourceA)
-    const checkpointB = ledger.checkpoint(sourceB)
-    const payloadA = page(checkpointA, 1, [row(1)], true)
-    const payloadB = page(checkpointB, 1, [row(1, { input: 99 })])
-    expect((await ingest(request(path, payloadA, keyB))).status).toBe(403)
-    const results = await Promise.all([ingest(request(path, payloadA, keyA)), ingest(request(path, payloadA, keyA)),
-      ingest(request(path, payloadB, keyB))])
-    expect(results.map(result => result.status).sort()).toEqual([200, 200, 409])
-    expect(visibleRows(ledger, sourceA)).toEqual([])
-    expect(visibleRows(ledger, sourceB)).toMatchObject([{ row_key: rowKey, input: 99 }])
-
-    const currentA = ledger.checkpoint(sourceA)
-    expect(currentA).toMatchObject({ phase: 'backfill', cursor: payloadA.nextCursor, lastSyncedAt: null })
-    const empty = await ingest(request(path, page(currentA, 2), keyA))
-    expect(await empty.json()).toMatchObject({ checkpoint: { phase: 'sync', cursor: 'fixture-cursor-2',
-      lastSyncedAt: expect.any(String) }, upserted: 0, removed: 0 })
-    expect(visibleRows(ledger, sourceA)).toMatchObject([{ row_key: rowKey, input: 8 }])
-
-    const correction = page(ledger.checkpoint(sourceA), 3, [row(3, { input: 18 }), row(2, { rowKey: olderKey, t: older, via: 'direct' })])
-    expect((await ingest(request(path, correction, keyA))).status).toBe(200)
+    expect(() => ledger.checkpoint(sourceA)).toThrow('source_transport_inactive')
+    expect(() => ledger.commit({ ...page(ledger.checkpoint('local'), 1, [row(1)]), sourceId: sourceA })).toThrow('source_transport_inactive')
+    ledger.commitOtlp(digest(keyA), [otlpRow(), otlpRow()])
+    const initial = ledger.getSources().find(source => source.id === sourceA)
+    expect(initial).toMatchObject({ phase: 'receiving', activeGeneration: 1 })
+    ledger.commitOtlp(digest(keyB), [otlpRow({ input: 99 })])
+    ledger.commitOtlp(digest(keyA), [otlpRow({ input: 18, t: older }), otlpRow({ rowKey: olderKey, t: older, via: 'session' })])
+    expect(ledger.getSources().find(source => source.id === sourceA)?.activeGeneration).toBe(initial?.activeGeneration)
     expect(visibleRows(ledger, sourceA)).toEqual([
-      { row_key: olderKey, seq: 2, t: older, time_ms: Date.parse(older), input: 8 },
-      { row_key: rowKey, seq: 3, t: recent, time_ms: Date.parse(recent), input: 18 },
+      { row_key: olderKey, seq: 0, t: older, time_ms: Date.parse(older), input: 8 },
+      { row_key: rowKey, seq: 0, t: recent, time_ms: Date.parse(recent), input: 8 },
     ])
-    const deletion = { ...page(ledger.checkpoint(sourceA), 4), removals: [{ rowKey, seq: 4 }] }
-    expect(await (await ingest(request(path, deletion, keyA))).json()).toMatchObject({ removed: 1 })
-    expect(visibleRows(ledger, sourceA)).toHaveLength(1)
     expect(visibleRows(ledger, sourceB)).toMatchObject([{ row_key: rowKey, input: 99 }])
-    const staleChange = page(ledger.checkpoint(sourceA), 5, [row(3)])
-    expect((await ingest(request(path, staleChange, keyA))).status).toBe(400)
-    expect(visibleRows(ledger, sourceA)).toHaveLength(1)
+    expect(visibleRows(ledger, 'local')).toEqual([])
   } finally {
     ledger.db.close()
   }
 })
 
-test('a failed checkpoint update rolls back the page and retry publishes it once', async () => {
+test('a failed local checkpoint update rolls back the page and retry publishes it once', () => {
   const ledger = openCenterLedger(':memory:')
   try {
-    const sourceId = createSource(ledger, 'Windows A', keyA)
-    const ingest = createIngest(ledger)
-    const checkpoint = ledger.checkpoint(sourceId)
+    const checkpoint = ledger.checkpoint('local')
     const payload = page(checkpoint, 1, [row(1)])
     ledger.db.exec(`CREATE TEMP TRIGGER fixture_write_failure BEFORE UPDATE OF cursor ON sources
       BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;`)
-    const failed = await ingest(request('/v1/usage-hub/pages', payload, keyA))
-    expect(failed.status).toBe(503)
-    expect(await failed.json()).toEqual({ error: { code: 'ingest_unavailable' } })
+    expect(() => ledger.commit(payload)).toThrow('fixture write failure')
     expect(ledger.db.query('SELECT row_key FROM usage_rows').all()).toEqual([])
-    expect(ledger.checkpoint(sourceId)).toEqual(checkpoint)
+    expect(ledger.checkpoint('local')).toEqual(checkpoint)
     ledger.db.exec('DROP TRIGGER fixture_write_failure')
-    expect((await ingest(request('/v1/usage-hub/pages', payload, keyA))).status).toBe(200)
-    expect((await ingest(request('/v1/usage-hub/pages', payload, keyA))).status).toBe(409)
-    expect(visibleRows(ledger, sourceId)).toHaveLength(1)
+    expect(ledger.commit(payload).upserted).toBe(1)
+    expect(() => ledger.commit(payload)).toThrow('checkpoint_conflict')
+    expect(visibleRows(ledger, 'local')).toHaveLength(1)
   } finally {
     ledger.db.close()
   }
 })
 
-test('a revoked credential cannot finish an in-flight page and another source can still submit', async () => {
+test('local backfill publishes on the last page and applies later corrections and removals', () => {
   const ledger = openCenterLedger(':memory:')
-  const upload = Promise.withResolvers<void>()
+  try {
+    const sourceId = 'local'
+    const staged = ledger.commit(page(ledger.checkpoint(sourceId), 1, [row(1)], true))
+    expect(staged.checkpoint).toMatchObject({ phase: 'backfill', lastSyncedAt: null })
+    expect(visibleRows(ledger, sourceId)).toEqual([])
+    const published = ledger.commit(page(staged.checkpoint, 2))
+    expect(published.checkpoint).toMatchObject({ phase: 'sync', lastSyncedAt: expect.any(String) })
+    const correction = ledger.commit(page(published.checkpoint, 3, [row(3, { input: 18 }),
+      row(2, { rowKey: olderKey, t: older, via: 'direct' })]))
+    expect(correction.upserted).toBe(2)
+    expect(visibleRows(ledger, sourceId)).toEqual([
+      { row_key: olderKey, seq: 2, t: older, time_ms: Date.parse(older), input: 8 },
+      { row_key: rowKey, seq: 3, t: recent, time_ms: Date.parse(recent), input: 18 },
+    ])
+    const deletion = { ...page(correction.checkpoint, 4), removals: [{ rowKey, seq: 4 }] }
+    expect(ledger.commit(deletion).removed).toBe(1)
+    expect(() => ledger.commit(page(ledger.checkpoint(sourceId), 5, [row(3)]))).toThrow('invalid_page_progress')
+    expect(visibleRows(ledger, sourceId)).toMatchObject([{ row_key: olderKey }])
+  } finally {
+    ledger.db.close()
+  }
+})
+
+test('OTLP commit rechecks revocation and rolls usage, contact and key verification back together', () => {
+  const ledger = openCenterLedger(':memory:')
   try {
     const sourceA = createSource(ledger, 'Windows A', keyA)
     const sourceB = createSource(ledger, 'Windows B', keyB)
-    const path = '/v1/usage-hub/pages'
-    const ingest = createIngest(ledger)
-    const draft = page(ledger.checkpoint(sourceA), 1, [row(1)])
-    const makeDelayedRequest = () => new Request(`http://127.0.0.1${path}`, {
-      method: 'POST', headers: { Authorization: `Bearer ${keyA}`, 'Content-Type': 'application/json' },
-      body: new ReadableStream({ async pull(controller) {
-        await upload.promise
-        controller.enqueue(new TextEncoder().encode(JSON.stringify(draft)))
-        controller.close()
-      } }),
-    })
-    const pending = [ingest(makeDelayedRequest()), ingest(makeDelayedRequest())]
-    expect((await ingest(request(path, draft, keyA))).status).toBe(429)
-    expect((await ingest(request(path, page(ledger.checkpoint(sourceB), 1, [row(1)]), keyB))).status).toBe(200)
+    expect(ledger.authenticateOtlp(digest(keyA))).toBe(sourceA)
     ledger.editSource({ revision: ledger.managementSnapshot().revision, action: 'revoke', id: sourceA, slot: 'all' })
-    upload.resolve()
-    expect((await Promise.all(pending)).map(response => response.status)).toEqual([401, 401])
-    expect(ledger.checkpoint(sourceA).cursor).toBe('start')
+    expect(() => ledger.commitOtlp(digest(keyA), [otlpRow()], sourceA)).toThrow('report_key_invalid')
+    const reassigned = createSource(ledger, 'Windows C', keyA)
+    expect(ledger.authenticateOtlp(digest(keyA))).toBe(reassigned)
+    expect(() => ledger.commitOtlp(digest(keyA), [otlpRow()], sourceA)).toThrow('source_mismatch')
+    expect(visibleRows(ledger, sourceA)).toEqual([])
+    ledger.editSource({ revision: ledger.managementSnapshot().revision, action: 'rotate', id: sourceB, digest: digest(keyNext) })
+    ledger.db.exec(`CREATE TEMP TRIGGER fixture_write_failure BEFORE UPDATE OF verified ON credentials
+      WHEN NEW.slot = 'pending' BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;`)
+    expect(() => ledger.commitOtlp(digest(keyNext), [otlpRow()])).toThrow('fixture write failure')
+    expect(ledger.db.query('SELECT row_key FROM usage_rows').all()).toEqual([])
+    expect(ledger.getSources().find(source => source.id === sourceB)).toMatchObject({ phase: 'waiting', lastPageAt: null,
+      lastSeenAt: null, activeGeneration: null, credentials: { pendingVerified: false } })
+    ledger.db.exec('DROP TRIGGER fixture_write_failure')
+    ledger.commitOtlp(digest(keyNext), [otlpRow()])
+    expect(ledger.getSources().find(source => source.id === sourceB)).toMatchObject({ phase: 'receiving',
+      credentials: { pendingVerified: true } })
     expect(visibleRows(ledger, sourceB)).toHaveLength(1)
   } finally {
-    upload.resolve()
     ledger.db.close()
   }
 })
@@ -206,16 +207,10 @@ test('a revoked credential cannot finish an in-flight page and another source ca
 test('recovery stages a replacement, records missing events, and requires approval for a reset', async () => {
   const ledger = openCenterLedger(':memory:')
   try {
-    const sourceId = createSource(ledger, 'Windows A', keyA)
-    const ingest = createIngest(ledger)
+    const sourceId = 'local'
     const manage = createSourceManagement(ledger)
     const first = ledger.commit(page(ledger.checkpoint(sourceId), 2, [row(1, { rowKey: olderKey, t: older }), row(2)]))
-    const denied = await ingest(request('/v1/usage-hub/recovery', { sourceId, revision: first.checkpoint.revision,
-      reason: 'cursor_expired' }, keyB))
-    expect(denied.status).toBe(401)
-    const expiry = await ingest(request('/v1/usage-hub/recovery', { sourceId, revision: first.checkpoint.revision,
-      reason: 'cursor_expired' }, keyA))
-    const rebuilding = await expiry.json() as Checkpoint
+    const rebuilding = ledger.recover({ sourceId, revision: first.checkpoint.revision, reason: 'cursor_expired' })
     expect(rebuilding).toMatchObject({ phase: 'rebuilding', cursor: 'start', sourceId })
     const staged = ledger.commit(page(rebuilding, 1, [row(1, { input: 20 })], true))
     expect(visibleRows(ledger, sourceId)).toMatchObject([{ row_key: olderKey }, { row_key: rowKey, input: 8 }])
@@ -227,7 +222,7 @@ test('recovery stages a replacement, records missing events, and requires approv
 
     const reset = ledger.recover({ sourceId, revision: completed.checkpoint.revision, reason: 'cursor_reset' })
     expect(reset).toMatchObject({ phase: 'recovery_required', cursor: completed.checkpoint.cursor })
-    expect((await ingest(request('/v1/usage-hub/pages', page(reset, 3), keyA))).status).toBe(409)
+    expect(() => ledger.commit(page(reset, 3))).toThrow('source_recovery_required')
     expect(visibleRows(ledger, sourceId)).toHaveLength(1)
     const approval = await manage(request('/api/sources', { revision: ledger.managementSnapshot().revision,
       action: 'rebuild', id: sourceId }))
@@ -238,32 +233,46 @@ test('recovery stages a replacement, records missing events, and requires approv
   }
 })
 
-test('reopening a restored database preserves source progress but invalidates stale revisions', async () => {
+test('schema 1 migration preserves published legacy history and local cursor progress', async () => {
   const root = await realpath(tmpdir())
   const directory = await mkdtemp(join(root, 'mpu-center-ledger-'))
   const path = join(directory, 'center.sqlite')
   let ledger: CenterLedger | undefined
   try {
     ledger = openCenterLedger(path)
-    const sourceId = createSource(ledger, 'Windows A', keyA)
-    const ingest = createIngest(ledger)
-    const pathPages = '/v1/usage-hub/pages'
-    const commit = await ingest(request(pathPages, page(ledger.checkpoint(sourceId), 1, [row(1)]), keyA))
-    const before = (await commit.json() as PageReceipt).checkpoint
+    const legacyId = createSource(ledger, 'Windows A', keyA)
+    ledger.commitOtlp(digest(keyA), [otlpRow({ input: 34 })])
+    ledger.db.run("UPDATE sources SET phase = 'sync', cursor = ?, last_seq = 1 WHERE id = ?", ['fixture-remote-cursor', legacyId])
+    ledger.db.run('UPDATE usage_rows SET seq = 1 WHERE source_id = ?', [legacyId])
+    const before = ledger.commit(page(ledger.checkpoint('local'), 1, [row(1)])).checkpoint
     const adminRevision = ledger.managementSnapshot().revision
+    ledger.db.exec('ALTER TABLE sources DROP COLUMN transport; PRAGMA user_version = 1;')
     ledger.db.close()
     ledger = undefined
 
-    ledger = openCenterLedger(path)
-    const restored = await (await createIngest(ledger)(request('/v1/usage-hub/checkpoint', undefined, keyA))).json() as Checkpoint
-    expect(restored).toMatchObject({ centerId: before.centerId, sourceId, cursor: before.cursor,
+    const migrated = ledger = openCenterLedger(path)
+    const restored = migrated.checkpoint('local')
+    expect(restored).toMatchObject({ centerId: before.centerId, sourceId: 'local', cursor: before.cursor,
       phase: 'sync', lastSyncedAt: before.lastSyncedAt })
     expect(restored.revision).not.toBe(before.revision)
-    expect(ledger.managementSnapshot().revision).not.toBe(adminRevision)
-    expect(visibleRows(ledger, sourceId)).toHaveLength(1)
-    const stale = await createIngest(ledger)(request(pathPages, page(before, 2), keyA))
-    expect(stale.status).toBe(409)
-    expect(await stale.json()).toEqual({ error: { code: 'checkpoint_conflict' } })
+    expect(migrated.managementSnapshot().revision).not.toBe(adminRevision)
+    expect(migrated.db.query('PRAGMA user_version').get()).toEqual({ user_version: 2 })
+    expect(visibleRows(migrated, 'local')).toHaveLength(1)
+    expect(() => migrated.commit(page(before, 2))).toThrow('checkpoint_conflict')
+    expect(migrated.getSources().find(source => source.id === legacyId)).toMatchObject({ transport: 'legacy',
+      phase: 'historical', credentials: { current: true }, rebuildAllowed: false })
+    expect(() => migrated.authenticateOtlp(digest(keyA))).toThrow('source_transport_inactive')
+    expect(() => migrated.commitOtlp(digest(keyA), [otlpRow()])).toThrow('source_transport_inactive')
+    expect(() => migrated.editSource({ revision: migrated.managementSnapshot().revision, action: 'update',
+      id: legacyId, name: 'changed' })).toThrow('source_transport_inactive')
+    expect(visibleRows(migrated, legacyId)).toMatchObject([{ row_key: rowKey, input: 34 }])
+    const dashboard = createDashboard(migrated, 'UTC')
+    const query = new URL('http://127.0.0.1/api/usage')
+    query.search = new URLSearchParams({ sourceId: legacyId, from: '2026-11-27T00:00:00Z', to: '2026-11-28T00:00:00Z' }).toString()
+    const response = await dashboard(query, new AbortController().signal)
+    expect(await response.json()).toMatchObject({ sources: [{ transport: 'legacy', freshness: 'historical', totals: { calls: 1, input: 34 } }] })
+    const newSource = createSource(migrated, 'Windows B', keyB)
+    expect(migrated.authenticateOtlp(digest(keyB))).toBe(newSource)
   } finally {
     ledger?.db.close()
     const target = await realpath(directory)

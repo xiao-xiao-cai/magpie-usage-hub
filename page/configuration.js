@@ -55,20 +55,13 @@
       else inputs[name].value = value
     }
     dirtyFields = readDirtyFields()
-    renderRole()
-  }
-
-  function renderRole() {
-    const sender = inputs.role.value === 'sender'
-    element('sender-fields').hidden = !sender
-    element('center-fields').hidden = sender
   }
 
   function updateDiagnosticLink() {
     const link = element('diagnostic-link')
     const guide = element('diagnostic-guide')
     const revision = options.revision(saved?.configRevision)
-    const center = options.enabledRole(saved) === 'center'
+    const center = options.centerEnabled(saved)
     element('revision-value').textContent = revision
     element('settings-revision').hidden = !revision
     const href = saved && options.pageServiceLink(window.magpie?.service, window.location.href, saved)
@@ -80,7 +73,7 @@
     }
     link.href = href
     link.textContent = center ? '打开用量看板' : '打开后台诊断'
-    guide.textContent = center ? '从看板查询用量和管理上报来源。' : '在后台诊断查看配置采用和同步状态。'
+    guide.textContent = center ? '从看板查询用量和管理上报来源。' : '在后台诊断查看设置生效情况。'
   }
 
   function render(state) {
@@ -88,7 +81,7 @@
     const { result, differences, refreshing, writing, pending } = state
     if (state.saved && (state.saved !== saved || result === 'confirmed')) renderSettings(state.saved, result === 'confirmed')
     updateDiagnosticLink()
-    element('migration-guide').hidden = !(saved?.enabled === true && saved.collectionMode !== 'push')
+    element('migration-guide').hidden = saved?.enabled !== true || options.centerEnabled(saved)
     const busy = writing || refreshing
     element('reload-options').disabled = writing
     element('settings-fields').disabled = !saved || writing || pending
@@ -126,7 +119,6 @@
   element('rebase-options').addEventListener('click', session.adoptLatest)
   for (const input of Object.values(inputs)) {
     input.addEventListener('input', () => {
-      if (input === inputs.role) renderRole()
       dirtyFields = readDirtyFields()
       if (!snapshot.differences && !snapshot.pending) message(dirtyFields.size ? '有未保存的更改。' : '')
     })

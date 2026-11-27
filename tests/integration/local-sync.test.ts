@@ -1,13 +1,7 @@
 import { expect, test } from 'bun:test'
-import { createHash, randomBytes } from 'node:crypto'
-import { mkdtemp, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { createIngest } from '../../src/center/ingest.ts'
+import { createHash } from 'node:crypto'
 import { openCenterLedger } from '../../src/center/ledger.ts'
-import { openReportingTarget } from '../../src/gateway/reporting.ts'
 import { mapNativePage } from '../../src/sync/mapping.ts'
-import { ingestPaths } from '../../src/sync/protocol.ts'
 import { synchronizeRound } from '../../src/sync/runner.ts'
 
 function nativeRow(seq: number, id: string, origin = 'gateway') {
@@ -19,20 +13,12 @@ function nativeRow(seq: number, id: string, origin = 'gateway') {
   }
 }
 
-test('sender reads the durable checkpoint after a lost acknowledgement and applies late events and tombstones', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'mpu-reporting-'))
-  const key = randomBytes(32).toString('hex')
-  const keyFile = join(directory, 'fixture.key')
-  await writeFile(keyFile, key, { mode: 0o600 })
+test('the local collector resumes from its committed page and applies late events and tombstones', async () => {
   const ledger = openCenterLedger(':memory:')
-  const { sources } = ledger.editSource({ revision: ledger.managementSnapshot().revision, action: 'create',
-    name: 'Fixture Windows', enabled: true, digest: createHash('sha256').update(key).digest('hex') })
-  const sourceId = sources.find(source => !source.isLocal)!.id
+  const sourceId = 'local'
   const readCursors: string[] = []
-  const sentBodies: string[] = []
   let expire = false
   let resized = false
-  let dropAcknowledgement = true
   const gateway = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: request => {
     const url = new URL(request.url)
     const cursor = url.searchParams.get('cursor')
@@ -50,28 +36,13 @@ test('sender reads the durable checkpoint after a lost acknowledgement and appli
     return Response.json({ rows: [nativeRow(3, 'c', 'session')], deleted: [{ id: 'u_' + 'a'.repeat(20), seq: 4 }],
       next_cursor: 'third', has_more: false })
   } })
-  const ingest = createIngest(ledger)
-  const center = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
-    const isPage = new URL(request.url).pathname === ingestPaths.pages
-    if (isPage) sentBodies.push(await request.clone().text())
-    const response = await ingest(request)
-    if (isPage && dropAcknowledgement) {
-      dropAcknowledgement = false
-      expect(response.status).toBe(200)
-      return new Response(null, { status: 503 })
-    }
-    return response
-  } })
+  const target = { checkpoint: () => ledger.checkpoint(sourceId), commit: ledger.commit, recover: ledger.recover }
   try {
-    const round = async () => synchronizeRound({ gateway: gateway.url, timeoutMs: 1_000, sourceId },
-      await openReportingTarget(center.url, keyFile, 1_000), () => {}, () => {})
-    await expect(round()).rejects.toThrow('unavailable')
-    expect(ledger.checkpoint(sourceId)).toMatchObject({ cursor: 'second', phase: 'sync' })
+    const round = () => synchronizeRound({ gateway: gateway.url, timeoutMs: 1_000, sourceId }, target, () => {})
+    expect(await round()).toMatchObject({ cursor: 'second', phase: 'sync' })
+    expect(ledger.db.query('SELECT via FROM usage_rows').all()).toEqual([{ via: 'through' }])
     expect((await round()).cursor).toBe('third')
     expect(readCursors).toEqual(['start', 'start', 'second'])
-    expect(sentBodies.join('')).not.toContain('fixture-private-identifier')
-    expect(sentBodies.join('')).not.toContain('fixture-account')
-    expect(sentBodies.join('')).not.toContain('u_' + 'b'.repeat(20))
     expect(ledger.db.query('SELECT t, via, cost, status, duration_ms FROM usage_rows').all()).toEqual([
       { t: '2026-11-25T13:59:01.123456789+08:00', via: 'direct', cost: 0, status: null, duration_ms: null },
     ])
@@ -81,12 +52,8 @@ test('sender reads the durable checkpoint after a lost acknowledgement and appli
     expect(await round()).toMatchObject({ cursor: 'rebuilt', phase: 'sync' })
     expect(ledger.db.query('SELECT via FROM usage_rows').all()).toEqual([{ via: 'through' }])
   } finally {
-    await center.stop(true)
     await gateway.stop(true)
     ledger.db.close()
-    const { unlink, rmdir } = await import('node:fs/promises')
-    await unlink(keyFile)
-    await rmdir(directory)
   }
 })
 
@@ -135,7 +102,7 @@ test('bounds a backlog round and resumes its unpublished backfill from the confi
     recover: ledger.recover,
   }
   try {
-    const round = () => synchronizeRound({ gateway: gateway.url, timeoutMs: 1_000, sourceId }, target, () => {}, () => {})
+    const round = () => synchronizeRound({ gateway: gateway.url, timeoutMs: 1_000, sourceId }, target, () => {})
     expect(await round()).toMatchObject({ cursor: '5', phase: 'backfill', hasMore: true })
     expect(ledger.getSources()[0]?.activeGeneration).toBeNull()
     expect(cursors).toEqual(['start', '1', '2', '3', '4'])

@@ -14,7 +14,7 @@ type DiagnosticStatus = {
   loadedRevision: string | null
   appliedRevision: string | null
   phase: 'starting' | 'disabled' | 'migration_required' | 'waiting_lock' | 'ready' | 'retrying' | 'blocked'
-  role: 'center' | 'sender' | null
+  role: 'center' | null
   syncPhase: SyncPhase | null
   ready: boolean
   hasMore: boolean

@@ -1,10 +1,8 @@
 const usageHubOptions = (() => {
   const fieldLabels = {
     collectionMode: '采集模式', role: '角色', enabled: '启停', centerGatewayUrl: '中心本机网关',
-    ingestHost: '接收监听地址', ingestPort: '接收端口', timeZone: '看板时区',
-    sourceGatewayUrl: '来源本机网关', centerIngestUrl: '中心接收地址', sourceId: '来源 ID',
-    reportKeyFile: '上报令牌文件',
-    requestTimeoutSec: '单次请求超时', configRevision: '保存修订',
+    ingestHost: 'OTLP 监听地址', ingestPort: 'OTLP 接收端口', timeZone: '看板时区',
+    requestTimeoutSec: '本机网关请求超时', configRevision: '保存修订',
   }
   const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
   const localGateway = 'http://127.0.0.1:3425/'
@@ -28,9 +26,9 @@ const usageHubOptions = (() => {
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
   }
 
-  function enabledRole(saved) {
-    return saved?.collectionMode === 'push' && saved.enabled === true && ['center', 'sender'].includes(saved.role)
-      ? saved.role : ''
+  function centerEnabled(saved) {
+    return saved?.enabled === true && saved.role === 'center'
+      && (saved.collectionMode === 'otlp' || saved.collectionMode === 'push')
   }
 
   function pageServiceLink(service, current, saved) {
@@ -40,7 +38,7 @@ const usageHubOptions = (() => {
       const target = new URLSearchParams()
       const selectedRevision = revision(saved?.configRevision)
       if (selectedRevision) target.set('revision', selectedRevision)
-      if (enabledRole(saved) === 'center') target.set('view', 'dashboard')
+      if (centerEnabled(saved)) target.set('view', 'dashboard')
       url.hash = target.toString()
       return url.href
     } catch {
@@ -48,11 +46,11 @@ const usageHubOptions = (() => {
     }
   }
 
-  function rootUrl(value, loopback = false) {
+  function gatewayUrl(value) {
     if (typeof value !== 'string' || !/^https?:\/\/[^/?#@\\\s\u0000-\u001f\u007f]+\/?$/i.test(value)) return ''
     try {
       const url = new URL(value)
-      if (url.href !== `${url.origin}/` || (loopback && !['127.0.0.1', '[::1]'].includes(url.hostname))) return ''
+      if (url.href !== `${url.origin}/` || !['127.0.0.1', '[::1]'].includes(url.hostname)) return ''
       return url.href
     } catch {
       return ''
@@ -63,16 +61,11 @@ const usageHubOptions = (() => {
     const timeout = saved.requestTimeoutSec ?? 30
     const port = saved.ingestPort ?? 3494
     return {
-      role: saved.collectionMode === 'push' && saved.role === 'sender' ? 'sender' : 'center',
-      enabled: Boolean(enabledRole(saved)),
-      centerGatewayUrl: rootUrl(saved.centerGatewayUrl ?? localGateway, true),
+      enabled: centerEnabled(saved),
+      centerGatewayUrl: gatewayUrl(saved.centerGatewayUrl ?? localGateway),
       ingestHost: typeof saved.ingestHost === 'string' ? saved.ingestHost : '127.0.0.1',
       ingestPort: Number.isFinite(port) ? String(port) : '',
       timeZone: typeof saved.timeZone === 'string' ? saved.timeZone : 'Asia/Shanghai',
-      sourceGatewayUrl: rootUrl(saved.sourceGatewayUrl ?? localGateway, true),
-      centerIngestUrl: rootUrl(saved.centerIngestUrl),
-      sourceId: revision(saved.sourceId),
-      reportKeyFile: typeof saved.reportKeyFile === 'string' ? saved.reportKeyFile : '',
       requestTimeoutSec: Number.isFinite(timeout) ? String(timeout) : '',
     }
   }
@@ -91,44 +84,25 @@ const usageHubOptions = (() => {
   }
 
   function settingsPatch(draft) {
-    const { role, enabled, requestTimeoutSec } = draft
-    if (role !== 'center' && role !== 'sender') throw new FieldError('role', '请选择此实例的角色。')
+    const { enabled, requestTimeoutSec, ingestPort } = draft
     if (!Number.isInteger(requestTimeoutSec) || requestTimeoutSec < 1 || requestTimeoutSec > 120) {
       throw new FieldError('requestTimeoutSec', '请输入 1 至 120 的整数。')
     }
-    const common = { collectionMode: 'push', role, enabled, requestTimeoutSec }
-    if (role === 'center') {
-      const centerGatewayUrl = rootUrl(draft.centerGatewayUrl.trim(), true)
-      const ingestHost = draft.ingestHost.trim()
-      const { ingestPort } = draft
-      const timeZone = draft.timeZone.trim()
-      if (!centerGatewayUrl) throw new FieldError('centerGatewayUrl', '请输入有效的 HTTP(S) 回环网关根地址。')
-      const gateway = new URL(centerGatewayUrl)
-      const gatewayPort = Number(gateway.port || (gateway.protocol === 'https:' ? 443 : 80))
-      if (!isListenAddress(ingestHost)) throw new FieldError('ingestHost', '请输入监听使用的 IPv4 或 IPv6 地址。')
-      if (!Number.isInteger(ingestPort) || ingestPort < 1 || ingestPort > 65535) {
-        throw new FieldError('ingestPort', '请输入 1 至 65535 之间的接收端口。')
-      }
-      if (ingestPort === 3493 || ingestPort === gatewayPort) {
-        throw new FieldError('ingestPort', '接收端口与插件页面或本机网关冲突，请填写其他端口。')
-      }
-      if (!isTimeZone(timeZone)) throw new FieldError('timeZone', '请输入有效的 IANA 时区，例如 Asia/Shanghai。')
-      return { ...common, centerGatewayUrl, ingestHost, ingestPort, timeZone }
+    const centerGatewayUrl = gatewayUrl(draft.centerGatewayUrl.trim())
+    const ingestHost = draft.ingestHost.trim()
+    const timeZone = draft.timeZone.trim()
+    if (!centerGatewayUrl) throw new FieldError('centerGatewayUrl', '请输入有效的 HTTP(S) 回环网关根地址。')
+    const gateway = new URL(centerGatewayUrl)
+    const gatewayPort = Number(gateway.port || (gateway.protocol === 'https:' ? 443 : 80))
+    if (!isListenAddress(ingestHost)) throw new FieldError('ingestHost', '请输入监听使用的 IPv4 或 IPv6 地址。')
+    if (!Number.isInteger(ingestPort) || ingestPort < 1 || ingestPort > 65535) {
+      throw new FieldError('ingestPort', '请输入 1 至 65535 之间的接收端口。')
     }
-
-    const sourceGatewayUrl = rootUrl(draft.sourceGatewayUrl.trim(), true)
-    const centerAddress = draft.centerIngestUrl.trim()
-    const centerIngestUrl = rootUrl(centerAddress)
-    const sourceId = draft.sourceId.trim()
-    const reportKeyFile = draft.reportKeyFile.trim()
-    if (!sourceGatewayUrl) throw new FieldError('sourceGatewayUrl', '请输入有效的 HTTP(S) 回环网关根地址。')
-    if ((enabled || centerAddress) && !centerIngestUrl) throw new FieldError('centerIngestUrl', '请输入有效的 HTTP(S) 中心接收根地址。')
-    if ((enabled || sourceId) && !revision(sourceId)) throw new FieldError('sourceId', '请填写来源管理中登记的来源 ID。')
-    if ((enabled || reportKeyFile) && (!/^(?:[A-Za-z]:[\\/]|\/(?!\/))/.test(reportKeyFile)
-      || reportKeyFile.length > 1024 || /[\u0000-\u001f\u007f]/.test(reportKeyFile))) {
-      throw new FieldError('reportKeyFile', '请输入令牌文件的完整路径。')
+    if (ingestPort === 3493 || ingestPort === gatewayPort) {
+      throw new FieldError('ingestPort', '接收端口与插件页面或本机网关冲突，请填写其他端口。')
     }
-    return { ...common, sourceGatewayUrl, centerIngestUrl, sourceId, reportKeyFile }
+    if (!isTimeZone(timeZone)) throw new FieldError('timeZone', '请输入有效的 IANA 时区，例如 Asia/Shanghai。')
+    return { collectionMode: 'otlp', role: 'center', enabled, requestTimeoutSec, centerGatewayUrl, ingestHost, ingestPort, timeZone }
   }
 
   function fieldDifferences(expected, actual) {
@@ -216,5 +190,5 @@ const usageHubOptions = (() => {
     return { refresh, submit, adoptLatest }
   }
 
-  return { FieldError, revision, createId, enabledRole, pageServiceLink, settingsView, settingsPatch, createSession }
+  return { FieldError, revision, createId, centerEnabled, pageServiceLink, settingsView, settingsPatch, createSession }
 })()

@@ -36,8 +36,9 @@
         <label for="via">用量分项</label>
         <select id="via">
           <option value="">全部分项</option>
-          <option value="through">经网关</option>
-          <option value="direct">直连</option>
+          <option value="through">网关</option>
+          <option value="direct">原生本机会话</option>
+          <option value="session">OTLP 会话</option>
         </select>
       </div>
       <div class="filter-field">
@@ -70,12 +71,13 @@
       <section aria-labelledby="summary-heading">
         <h2 id="summary-heading">分来源汇总</h2>
         <p id="range-label" class="muted"></p>
+        <p id="otlp-count-note" class="muted" hidden>OTLP 按收到的网关尝试和会话生成计数，同一次调用可能出现在两个分项。中心本机和历史来源按原生请求计数。</p>
         <div class="table-scroll" role="region" tabindex="0" aria-label="分来源用量汇总表">
           <table class="summary">
             <thead>
               <tr>
-                <th scope="col">来源</th><th scope="col">同步状态</th><th scope="col">已同步调用范围</th>
-                <th scope="col">请求数</th><th scope="col">输入 / 输出 Token</th><th scope="col">缓存读 / 写 Token</th>
+                <th scope="col">来源</th><th scope="col">状态</th><th scope="col">记录首末时间</th>
+                <th scope="col">计数</th><th scope="col">输入 / 输出 Token</th><th scope="col">缓存读 / 写 Token</th>
                 <th scope="col">已计价估算费用（USD）</th><th scope="col">缺价记录</th>
               </tr>
             </thead>
@@ -96,7 +98,7 @@
           <table>
             <thead>
               <tr>
-                <th scope="col">模型</th><th scope="col">来源</th><th scope="col">请求数</th>
+                <th scope="col">模型</th><th scope="col">来源</th><th scope="col">计数</th>
                 <th scope="col">输入 / 输出 Token</th><th scope="col">缓存读 / 写 Token</th>
                 <th scope="col">已计价估算费用（USD）</th><th scope="col">缺价记录</th>
               </tr>
@@ -107,9 +109,9 @@
       </section>
 
       <section id="rows-section" aria-labelledby="rows-heading">
-        <h2 id="rows-heading">请求明细</h2>
+        <h2 id="rows-heading">用量明细</h2>
         <p id="rows-notice" class="notice" role="status"></p>
-        <div id="rows-table" class="table-scroll" role="region" tabindex="0" aria-label="请求明细表" hidden>
+        <div id="rows-table" class="table-scroll" role="region" tabindex="0" aria-label="用量明细表" hidden>
           <table class="rows">
             <thead>
               <tr>
@@ -121,7 +123,7 @@
             <tbody id="detail-rows"></tbody>
           </table>
         </div>
-        <div id="row-pages" class="controls" aria-label="请求明细分页" hidden>
+        <div id="row-pages" class="controls" aria-label="用量明细分页" hidden>
           <button id="previous-rows" type="button">上一页</button>
           <span id="current-page" class="muted"></span>
           <button id="next-rows" type="button">下一页</button>

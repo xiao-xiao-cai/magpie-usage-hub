@@ -8,9 +8,11 @@ const dollars = new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maxim
 const freshnessText = new Map([
   ['new', '等待首次同步'], ['current', '已同步'], ['catching_up', '追赶中'], ['offline', '暂失联'], ['stalled', '等待新回执'],
   ['paused', '已暂停'], ['rebuilding', '重建中'], ['recovery_required', '待确认重建'],
+  ['waiting', '等待首次上报'], ['receiving', '已收到用量'], ['historical', '历史来源'],
 ])
+const viaText = new Map([['through', '网关'], ['direct', '原生本机会话'], ['session', 'OTLP 会话']])
 const explicitTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
-const sourceNames = new Map()
+const sourcesById = new Map()
 let sequence = 0
 let activeRequest
 let rowsRequest
@@ -65,9 +67,10 @@ function appendTotals(row, totals) {
 function summaryRow(source) {
   const row = document.createElement('tr')
   cell(row, source.name, 'source-name', true)
-  const status = cell(row, freshnessText.get(source.freshness) ?? '等待同步', 'usage-state')
-  if (source.lastSyncedAt) appendNote(status, `最近完成 ${formatTime(source.lastSyncedAt)}`)
-  const coverage = cell(row, source.coverage ? '' : '暂无已同步调用', 'usage-coverage')
+  const status = cell(row, freshnessText.get(source.freshness) ?? '状态待确认', 'usage-state')
+  if (source.transport === 'otlp' && source.lastPageAt) appendNote(status, `最近接收 ${formatTime(source.lastPageAt)}`)
+  if (source.lastSyncedAt) appendNote(status, `最近同步 ${formatTime(source.lastSyncedAt)}`)
+  const coverage = cell(row, source.coverage ? '' : '暂无记录', 'usage-coverage')
   if (source.coverage) {
     appendTime(coverage, source.coverage.from)
     if (source.coverage.from !== source.coverage.to) appendNote(coverage, `至 ${formatTime(source.coverage.to)}`)
@@ -102,11 +105,12 @@ function trendGroup(source, expanded) {
     region.className = 'table-scroll'
     region.tabIndex = 0
     region.setAttribute('role', 'region')
-    region.setAttribute('aria-label', `${source.name} 的请求趋势`)
+    region.setAttribute('aria-label', `${source.name} 的用量趋势`)
     const table = document.createElement('table')
     const head = document.createElement('thead')
     const titles = document.createElement('tr')
-    for (const title of ['统计时段', '请求数', '输入 / 输出 Token', '已计价估算费用（USD）']) {
+    const countTitle = source.transport === 'otlp' ? '观测数' : '请求数'
+    for (const title of ['统计时段', countTitle, '输入 / 输出 Token', '已计价估算费用（USD）']) {
       const headingCell = document.createElement('th')
       headingCell.scope = 'col'
       headingCell.textContent = title
@@ -145,23 +149,25 @@ function trendGroup(source, expanded) {
 
 function detailRow(item) {
   const row = document.createElement('tr')
+  const source = sourcesById.get(item.sourceId)
+  const hasUsage = item.input || item.output || (source?.transport === 'otlp' && (item.cacheRead || item.cacheWrite))
   appendTime(cell(row, '', '', true), item.t)
-  cell(row, sourceNames.get(item.sourceId) ?? '来源', 'source-name')
+  cell(row, source?.name ?? '来源', 'source-name')
   cell(row, item.model || '未标注模型', 'model-name')
-  const via = cell(row, item.via === 'through' ? '经网关' : '直连')
+  const via = cell(row, viaText.get(item.via) ?? '未标注分项')
   if (item.handedOn) appendNote(via, '中间尝试')
   cell(row, pair(item.input, item.output))
   const cache = cell(row, pair(item.cacheRead, item.cacheWrite))
   if (item.cacheUnknown) appendNote(cache, '缓存计数未知')
   cell(row, numbers.format(item.reasoning))
-  cell(row, item.cost === null ? (item.input || item.output ? '缺价' : '—') : cost(item.cost))
+  cell(row, item.cost === null ? (hasUsage ? '缺价' : '—') : cost(item.cost))
   cell(row, item.status == null ? '—' : String(item.status))
   cell(row, item.durationMs == null ? '—' : numbers.format(item.durationMs))
   return row
 }
 
 function sourceOptions(sources, selectedSource) {
-  for (const source of sources) sourceNames.set(source.id, source.name)
+  for (const source of sources) sourcesById.set(source.id, source)
   if (selectedSource) return
   const select = byId('source')
   const draft = select.value
@@ -221,6 +227,7 @@ function showSummary(usage, filters) {
     hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset',
   })
   byId('range-label').textContent = `${formatTime(range.from)} 至 ${formatTime(range.to)}（${range.timeZone}，结束时间不含）`
+  byId('otlp-count-note').hidden = !sources.some(source => source.transport === 'otlp')
   sourceOptions(sources, filters.get('sourceId'))
   byId('summary-rows').replaceChildren(...sources.map(summaryRow))
   const models = sources.flatMap(source => source.models.map(item => modelRow(source, item)))
@@ -262,7 +269,7 @@ async function loadRows(index) {
     if (controller !== rowsRequest) return
     byId('detail-rows').replaceChildren(...details.rows.map(detailRow))
     byId('rows-table').hidden = details.rows.length === 0
-    byId('rows-notice').textContent = details.rows.length ? '' : '该查询没有匹配的请求明细。'
+    byId('rows-notice').textContent = details.rows.length ? '' : '该查询没有匹配的用量明细。'
     byId('current-page').textContent = `第 ${numbers.format(index + 1)} 页`
     state.index = index
     state.next = details.nextPage

@@ -8,8 +8,8 @@ const digest = 'a'.repeat(64)
 const revisionOne = '11111111-1111-4111-8111-111111111111'
 const revisionTwo = '22222222-2222-4222-8222-222222222222'
 const revisionThree = '33333333-3333-4333-8333-333333333333'
-const source = { id: 'b49664b2-d102-4e01-93b0-a67d696bd618', name: '合成来源', enabled: true, isLocal: false,
-  phase: 'backfill', hasMore: false, lastSeenAt: null, lastPageAt: null, lastSyncedAt: null, recoveryReason: null,
+const source = { id: 'b49664b2-d102-4e01-93b0-a67d696bd618', name: '合成来源', enabled: true, transport: 'otlp',
+  phase: 'waiting', hasMore: false, lastSeenAt: null, lastPageAt: null, lastSyncedAt: null, recoveryReason: null,
   rebuildAllowed: false, gap: null, credentials: { current: true, pending: false, pendingVerified: false },
 }
 
@@ -86,7 +86,7 @@ describe('source management page', () => {
     expect(ui.control('source-digest').value).toBe('')
     expect(ui.control('source-id').textContent).toBe(source.id)
     expect(ui.control('source-notice').textContent).toBe('来源已登记。')
-    expect(ui.control('sources-rows').children[0].children[1].textContent).toBe('等待来源认证')
+    expect(ui.control('sources-rows').children[0].children[1].textContent).toBe('等待首次上报')
   })
 
   test('preserves edited fields across a conflicting source revision', async () => {
@@ -159,9 +159,11 @@ describe('source management page', () => {
     expect(ui.control('revoke-pending').hidden).toBe(true)
   })
 
-  test('allows same-source recovery on a paused source after explicit confirmation', async () => {
-    const paused = { ...source, enabled: false, phase: 'paused', recoveryReason: 'cursor_reset', rebuildAllowed: true }
-    const ui = harness([paused])
+  test('allows same-source recovery for the center gateway after explicit confirmation', async () => {
+    const blocked = { ...source, id: 'local', transport: 'local', phase: 'recovery_required',
+      recoveryReason: 'cursor_reset', rebuildAllowed: true,
+    }
+    const ui = harness([blocked])
     await Bun.sleep(0)
     ui.editFirst()
     expect(ui.control('recovery-tools').hidden).toBe(false)
@@ -171,11 +173,33 @@ describe('source management page', () => {
     expect(ui.control('action-confirmation').hidden).toBe(true)
     expect(ui.requests).toHaveLength(1)
     ui.click('rebuild-source')
-    ui.reply({ revision: revisionTwo, sources: [{ ...paused, rebuildAllowed: false }] })
+    ui.reply({ revision: revisionTwo, sources: [{ ...blocked, phase: 'rebuilding', rebuildAllowed: false }] })
     ui.click('confirm-action')
     await Bun.sleep(0)
-    expect(ui.lastBody()).toEqual({ id: source.id, revision: revisionOne, action: 'rebuild' })
+    expect(ui.lastBody()).toEqual({ id: 'local', revision: revisionOne, action: 'rebuild' })
     expect(ui.control('source-notice').textContent).toContain('已确认重建')
     expect(ui.control('recovery-tools').hidden).toBe(true)
+  })
+
+  test('keeps historical sources viewable and displays accepted OTLP activity during idle periods', async () => {
+    const historical = { ...source, name: '历史账本', transport: 'legacy', phase: 'historical', rebuildAllowed: true }
+    const oldReceipt = '2026-01-01T07:00:00.000Z'
+    const receiving = { ...source, id: 'ae55d102-304a-45a0-ad84-65d85ea5b227', phase: 'receiving',
+      lastSeenAt: oldReceipt, lastPageAt: oldReceipt,
+    }
+    const ui = harness([historical, receiving])
+    await Bun.sleep(0)
+    const [history, live] = ui.control('sources-rows').children
+    expect(history.children[1].textContent).toBe('历史来源')
+    expect(live.children[1].textContent).toBe('已收到用量')
+    expect(live.children[2].textContent).toContain('最近接收')
+    ui.editFirst()
+    expect(ui.control('historical-source-hint').hidden).toBe(false)
+    expect(ui.control('source-form').hidden).toBe(true)
+    expect(ui.control('source-credentials').hidden).toBe(true)
+    expect(ui.control('recovery-tools').hidden).toBe(true)
+    ui.click('save-source')
+    ui.click('rebuild-source')
+    expect(ui.requests).toHaveLength(1)
   })
 })

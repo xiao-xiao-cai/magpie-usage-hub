@@ -1,7 +1,7 @@
 {
   "name": "magpie-usage-hub",
-  "version": "0.6.0",
-  "description": "Sync Magpie request usage to a central dashboard with resumable reporting.",
+  "version": "0.7.0",
+  "description": "Receive native Magpie OTLP usage and query request history in a central dashboard.",
   "keywords": ["magpie-page"],
   "repository": {
     "type": "git",
@@ -20,8 +20,8 @@
   "magpie": {
     "name": "Magpie Usage Hub",
     "summary": {
-      "en": "Report usage from Magpie instances and query request history by source.",
-      "zh": "Magpie 实例主动上报用量，中心按来源和时段查询请求明细。"
+      "en": "Receive native Magpie OTLP usage and query history by source and time range.",
+      "zh": "接收 Magpie 原生 OTLP 用量，按来源和时段查询历史明细。"
     },
     "page": {
       "title": "Magpie Usage Hub",

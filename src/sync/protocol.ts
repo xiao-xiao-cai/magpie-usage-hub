@@ -1,12 +1,6 @@
 import { isRecord } from '../center/http.ts'
 
 export const pageLimit = 100
-export const pageBodyLimit = 1024 * 1024
-export const ingestPaths = {
-  checkpoint: '/v1/usage-hub/checkpoint',
-  pages: '/v1/usage-hub/pages',
-  recovery: '/v1/usage-hub/recovery',
-} as const
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 const timestampPattern = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/u
@@ -136,40 +130,4 @@ export function readPageSubmission(value: unknown): PageSubmission {
   const sequences = new Set(changes.map(value => value.seq))
   if (keys.size !== changes.length || sequences.size !== changes.length) throw new ProtocolFailure('duplicate_page_change')
   return { sourceId, revision, nextCursor, hasMore: value.hasMore, upserts, removals }
-}
-
-export function readRecoveryReport(value: unknown): RecoveryReport {
-  if (!isRecord(value) || !onlyFields(value, ['sourceId', 'revision', 'reason'])) throw new ProtocolFailure('invalid_recovery')
-  const sourceId = readSourceId(value.sourceId)
-  const revision = readRevision(value.revision)
-  const reason = readCursorFailure(value.reason)
-  if (!sourceId || !revision || !reason) throw new ProtocolFailure('invalid_recovery')
-  return { sourceId, revision, reason }
-}
-
-export function readCheckpoint(value: unknown): Checkpoint {
-  if (!isRecord(value)) throw new ProtocolFailure('invalid_checkpoint')
-  const centerId = readRevision(value.centerId)
-  const sourceId = readSourceId(value.sourceId)
-  const revision = readRevision(value.revision)
-  const cursor = readCursor(value.cursor)
-  const phase = phases.find(name => name === value.phase)
-  const { hasMore, lastSyncedAt } = value
-  if (!centerId || !sourceId || !revision || !cursor || !phase || typeof hasMore !== 'boolean'
-    || (lastSyncedAt !== null && (typeof lastSyncedAt !== 'string' || readTimestamp(lastSyncedAt) === null))) {
-    throw new ProtocolFailure('invalid_checkpoint')
-  }
-  return { centerId, sourceId, revision, cursor, phase, hasMore, lastSyncedAt }
-}
-
-export function readPageReceipt(value: unknown, page: PageSubmission): PageReceipt {
-  if (!isRecord(value) || !isCount(value.upserted, 0, page.upserts.length)
-    || !isCount(value.removed, 0, page.removals.length)) throw new ProtocolFailure('invalid_page_receipt')
-  const checkpoint = readCheckpoint(value.checkpoint)
-  if (checkpoint.revision === page.revision || checkpoint.sourceId !== page.sourceId
-    || checkpoint.cursor !== page.nextCursor || checkpoint.hasMore !== page.hasMore
-    || (checkpoint.phase !== 'sync' && checkpoint.phase !== 'backfill' && checkpoint.phase !== 'rebuilding')) {
-    throw new ProtocolFailure('invalid_page_receipt')
-  }
-  return { checkpoint, upserted: value.upserted, removed: value.removed }
 }

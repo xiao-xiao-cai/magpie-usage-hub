@@ -27,7 +27,7 @@
       <div id="sources-table" class="table-scroll" role="region" tabindex="0" aria-label="来源列表" hidden>
         <table>
           <thead>
-            <tr><th scope="col">来源</th><th scope="col">同步状态</th><th scope="col">最近联系</th><th scope="col">上报凭据</th><th scope="col">操作</th></tr>
+            <tr><th scope="col">来源</th><th scope="col">状态</th><th scope="col">最近活动</th><th scope="col">上报凭据</th><th scope="col">操作</th></tr>
           </thead>
           <tbody id="sources-rows"></tbody>
         </table>
@@ -35,9 +35,10 @@
     </section>
 
     <section id="editor" aria-labelledby="source-title">
-      <h2 id="source-title" tabindex="-1">添加来源</h2>
-      <p id="source-identity" class="muted" hidden>在来源插件填写此 ID <code id="source-id"></code></p>
+      <h2 id="source-title" tabindex="-1">添加 OTLP 来源</h2>
+      <p id="source-identity" class="muted" hidden>来源 ID <code id="source-id"></code></p>
       <p id="local-source-hint" class="muted" hidden>中心本机网关在插件设置中配置。</p>
+      <p id="historical-source-hint" class="muted" hidden>此来源的历史明细可在用量看板查询。</p>
       <form id="source-form" novalidate>
         <fieldset id="source-fields" class="source-fields" disabled>
           <div class="source-field">
@@ -45,13 +46,13 @@
             <input id="source-name" type="text" autocomplete="off" required>
           </div>
           <div id="create-credential" class="source-field">
-            <label for="source-digest">令牌文件的 SHA-256 摘要</label>
+            <label for="source-digest">上报令牌的 SHA-256 摘要</label>
             <input id="source-digest" type="text" maxlength="64" autocomplete="off" spellcheck="false" aria-describedby="source-digest-hint">
-            <small id="source-digest-hint" class="muted">填入来源本机对令牌文件计算的 64 位十六进制摘要。</small>
+            <small id="source-digest-hint" class="muted">填入 Magpie OTLP 上报令牌对应的 64 位十六进制摘要。</small>
           </div>
           <label class="source-check" for="source-enabled">
             <input id="source-enabled" type="checkbox" checked>
-            允许来源同步
+            允许来源上报
           </label>
           <div class="source-actions controls">
             <button id="save-source" type="submit" disabled>保存来源</button>
@@ -63,7 +64,7 @@
         <p id="credential-status" class="muted"></p>
         <form id="rotation-form" class="controls" novalidate>
           <div class="source-field">
-            <label for="rotation-digest">新令牌文件的 SHA-256 摘要</label>
+            <label for="rotation-digest">新令牌的 SHA-256 摘要</label>
             <input id="rotation-digest" type="text" maxlength="64" autocomplete="off" spellcheck="false">
           </div>
           <button id="rotate-source" type="submit">登记新令牌</button>
@@ -84,7 +85,7 @@
           <button id="cancel-action" type="button">取消</button>
         </div>
       </div>
-      <div class="controls source-tools"><button id="reset-source" type="button" hidden>返回添加来源</button></div>
+      <div class="controls source-tools"><button id="reset-source" type="button" hidden>返回添加 OTLP 来源</button></div>
       <p id="source-notice" class="notice" role="status"></p>
       <div id="revision-review" hidden>
         <p id="latest-source" class="muted"></p>

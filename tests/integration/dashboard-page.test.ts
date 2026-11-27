@@ -7,12 +7,14 @@ const diagnostics = readFileSync(new URL('../../ui/status.js', import.meta.url),
 const observedAt = '2026-11-27T10:00:00.000Z'
 const range = { from: '2026-11-27T00:00:00.000Z', to: '2026-11-27T01:00:00.000Z', timeZone: 'Asia/Shanghai' }
 const totals = { calls: 2, input: 11, output: 12, cacheRead: 0, cacheWrite: 0, cost: 0, unpriced: 2 }
-const local = { id: 'local', name: '中心本机', freshness: 'current', lastSyncedAt: observedAt, hasPublishedData: true,
+const local = { id: 'local', name: '中心本机', transport: 'local', freshness: 'current', lastSyncedAt: observedAt, hasPublishedData: true,
   coverage: { from: range.from, to: range.from }, totals, buckets: [], models: [{ model: '', totals }], gap: null,
 }
-const windows = { ...local, id: '01ed2b80-c848-48f1-b7a2-5852505416d5', name: 'Windows 合成来源', freshness: 'offline' }
-const row = { sourceId: windows.id, model: '', t: '2026-11-27T08:00:00+08:00', via: 'through',
-  handedOn: true, input: 0, output: 11, cacheRead: 0, cacheWrite: 0, reasoning: 0, cacheUnknown: true,
+const windows = { ...local, id: '01ed2b80-c848-48f1-b7a2-5852505416d5', name: 'Windows 合成来源', transport: 'otlp',
+  freshness: 'receiving', lastSyncedAt: null, lastPageAt: observedAt,
+}
+const row = { sourceId: windows.id, model: '', t: '2026-11-27T08:00:00+08:00', via: 'session',
+  handedOn: false, input: 0, output: 11, cacheRead: 0, cacheWrite: 0, reasoning: 0, cacheUnknown: true,
   cost: null, status: null, durationMs: 0,
 }
 const queryToken = 'e'.repeat(64)
@@ -73,7 +75,7 @@ function details(rows: object[], nextPage: string | null = null) {
 }
 
 describe('dashboard page', () => {
-  test('shows an offline source with its last published usage and original timestamps', async () => {
+  test('shows accepted OTLP usage and its original timestamp alongside center usage', async () => {
     const ui = dashboardHarness()
     ui.requests[0].pending.resolve(usage([local, windows]))
     await Bun.sleep(0)
@@ -83,18 +85,23 @@ describe('dashboard page', () => {
     const [center, remote] = ui.control('summary-rows').children
     expect(center.children[2].children[0].dateTime).toBe(range.from)
     expect(center.children.map(cell => cell.textContent).slice(3)).toEqual(['2', '11 / 12', '0 / 0', '0.00', '2'])
-    expect(remote.children[1].textContent).toBe('暂失联')
+    expect(remote.children[1].textContent).toBe('已收到用量')
+    expect(remote.children[1].children[0].textContent).toMatch(/^最近接收 /)
     expect(remote.children[3].textContent).toBe('2')
+    expect(ui.control('otlp-count-note').hidden).toBe(false)
     expect(ui.control('results').hidden).toBe(false)
 
-    ui.requests[1].pending.resolve(details([row]))
+    const cacheOnly = { ...row, output: 0, cacheRead: 11 }
+    ui.requests[1].pending.resolve(details([cacheOnly, { ...cacheOnly, sourceId: local.id, via: 'through', handedOn: true }]))
     await Bun.sleep(0)
-    const detail = ui.control('detail-rows').children[0]
+    const [detail, nativeDetail] = ui.control('detail-rows').children
     expect(detail.children[0].children[0].dateTime).toBe(row.t)
     expect(detail.children[1].textContent).toBe(windows.name)
-    expect(detail.children[3].children[0].textContent).toBe('中间尝试')
+    expect(detail.children[3].textContent).toBe('OTLP 会话')
     expect(detail.children[5].children[0].textContent).toBe('缓存计数未知')
     expect(detail.children[7].textContent).toBe('缺价')
+    expect(nativeDetail.children[3].children[0].textContent).toBe('中间尝试')
+    expect(nativeDetail.children[7].textContent).toBe('—')
   })
 
   test('preserves the latest period across late success and failure', async () => {
@@ -122,12 +129,12 @@ describe('dashboard page', () => {
     await Bun.sleep(0)
     ui.select('custom')
     ui.control('source').value = windows.id
-    ui.control('via').value = 'through'
+    ui.control('via').value = 'session'
     ui.control('model').value = 'model:'
     ui.control('from').value = row.t
     ui.control('to').value = '2026-11-27T09:00:00+08:00'
     ui.click('refresh')
-    expect(Object.fromEntries(ui.params(2))).toEqual({ sourceId: windows.id, bucket: 'day', via: 'through', model: '',
+    expect(Object.fromEntries(ui.params(2))).toEqual({ sourceId: windows.id, bucket: 'day', via: 'session', model: '',
       from: ui.control('from').value, to: ui.control('to').value,
     })
     ui.requests[2].pending.resolve(usage([windows]))
@@ -135,7 +142,7 @@ describe('dashboard page', () => {
     ui.requests[3].pending.resolve(details([row], 'fixture-next-page'))
     await Bun.sleep(0)
     ui.click('next-rows')
-    const filters = { sourceId: windows.id, via: 'through', model: '', from: range.from, to: range.to }
+    const filters = { sourceId: windows.id, via: 'session', model: '', from: range.from, to: range.to }
     expect(Object.fromEntries(ui.params(3))).toEqual(filters)
     expect(Object.fromEntries(ui.params(4))).toEqual({ ...filters, page: 'fixture-next-page' })
     ui.requests[4].pending.resolve(details([row]))
@@ -159,6 +166,7 @@ describe('dashboard page', () => {
     await Bun.sleep(0)
     expect(ui.control('notice').textContent).toContain('上限')
     expect(ui.control('summary-rows').children[0].children[3].textContent).toBe('2')
+    expect(ui.control('otlp-count-note').hidden).toBe(true)
     expect(ui.control('trend').hidden).toBe(true)
   })
 
@@ -182,21 +190,19 @@ describe('dashboard page', () => {
     expect(navigations).toEqual(['dashboard/'])
   })
 
-  test('shows sender recovery guidance with the last confirmed page and completed sync', async () => {
+  test('shows center retry guidance and the next retry time', async () => {
     const { control, document } = documentHarness()
     runInNewContext(diagnostics, {
       document, AbortSignal, URLSearchParams, Intl, setInterval: () => 1, location: { hash: '' },
-      fetch: async () => Response.json({ schema: 'magpie-usage-hub/status-v1', role: 'sender', ready: true,
-        phase: 'blocked', syncPhase: 'recovery_required', lastPageAt: observedAt, lastSyncedAt: observedAt,
-        failure: { stage: 'source', code: 'source_recovery_required' },
+      fetch: async () => Response.json({ schema: 'magpie-usage-hub/status-v1', role: 'center', ready: false,
+        phase: 'retrying', retryAt: observedAt, failure: { stage: 'center', code: 'timeout' },
       }),
     })
     await Bun.sleep(0)
-    expect(control('runtime-heading').textContent).toBe('来源同步任务')
-    expect(control('sync-phase').textContent).toContain('等待中心处理')
-    expect(control('failure').textContent).toContain('确认同源重建')
-    expect(control('last-page-row').hidden).toBe(false)
-    expect(control('last-sync-row').hidden).toBe(false)
+    expect(control('runtime-heading').textContent).toBe('OTLP 接收服务')
+    expect(control('phase').textContent).toBe('等待重试')
+    expect(control('failure').textContent).toContain('核对中心本机网关')
+    expect(control('retry-row').hidden).toBe(false)
     expect(control('dashboard-link').hidden).toBe(true)
   })
 })

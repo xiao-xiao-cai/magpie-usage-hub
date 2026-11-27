@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto'
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { ingestPaths } from '../../src/sync/protocol.ts'
 
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
   const deadline = performance.now() + timeoutMs
@@ -43,7 +42,7 @@ test('the center isolates local feed outages and preserves remote history across
       import { createDiagnostics } from './src/diagnostics.ts'
       const diagnostics = createDiagnostics(null, 'center')
       const services = await runCenter(process.env.MPU_FIXTURE_STATE, {
-        role: 'center', gateway: new URL(process.env.MPU_FIXTURE_GATEWAY), timeoutMs: 1000,
+        gateway: new URL(process.env.MPU_FIXTURE_GATEWAY), timeoutMs: 1000,
         ingestHost: '127.0.0.1', ingestPort: Number(process.env.MPU_FIXTURE_INGEST), timeZone: 'Asia/Shanghai',
       }, diagnostics)
       const api = 'http://127.0.0.1/api/sources'
@@ -95,20 +94,22 @@ test('the center isolates local feed outages and preserves remote history across
     await waitFor(first.hasMarker)
     const configuration = await first.observation()
     expect(configuration).toMatchObject({ phase: 'ready', saved: { sources: [{ id: 'local' }, { name: 'fixture' }] } })
-    const receiver = `http://127.0.0.1:${ingestPort}${ingestPaths.checkpoint}`
-    expect((await fetch(receiver)).status).toBe(401)
+    const receiver = `http://127.0.0.1:${ingestPort}/v1/traces`
+    expect((await fetch(receiver, { method: 'POST' })).status).toBe(401)
     const headers = { Authorization: `Bearer ${remoteKey}`, 'Content-Type': 'application/json' }
-    const initial = (await fetch(receiver, { headers }))
-    expect(initial.status).toBe(200)
-    const { sourceId, revision } = await initial.json()
-    const page = await fetch(`http://127.0.0.1:${ingestPort}${ingestPaths.pages}`, { method: 'POST', headers,
-      body: JSON.stringify({ sourceId, revision, nextCursor: 'confirmed-test-cursor', hasMore: false, removals: [], upserts: [{
-        rowKey: 'a'.repeat(64), seq: 1, t: '2026-11-27T08:15:00+08:00', via: 'through', model: 'fixture',
-        handedOn: false, input: 5, output: 2, cacheRead: 0, cacheWrite: 0, reasoning: 0, cacheUnknown: false,
-        cost: 0, status: 200, durationMs: 100,
-      }] }),
-    })
-    expect(page.status).toBe(200)
+    const start = BigInt(Date.parse('2026-11-27T08:15:00+08:00')) * 1_000_000n
+    const body = JSON.stringify({ resourceSpans: [{ scopeSpans: [{ scope: { name: 'github.com/yetone/magpie' }, spans: [{
+      traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), parentSpanId: 'c'.repeat(16), kind: 3,
+      startTimeUnixNano: start.toString(), endTimeUnixNano: (start + 100_000_000n).toString(),
+      attributes: [
+        { key: 'langfuse.observation.type', value: { stringValue: 'generation' } },
+        { key: 'gen_ai.request.model', value: { stringValue: 'fixture' } },
+        ...Object.entries({ 'gen_ai.usage.input_tokens': '5', 'gen_ai.usage.output_tokens': '2',
+          'gen_ai.usage.cache_read.input_tokens': '0', 'gen_ai.usage.cache_creation.input_tokens': '0',
+          'gen_ai.usage.reasoning.output_tokens': '0' }).map(([key, intValue]) => ({ key, value: { intValue } })),
+      ],
+    }] }] }] })
+    expect((await fetch(receiver, { method: 'POST', headers, body })).status).toBe(200)
 
     const successor = startHost('successor.json', false, foreignGateway.url)
     await Bun.sleep(1_200)
@@ -118,11 +119,12 @@ test('the center isolates local feed outages and preserves remote history across
     await waitFor(successor.hasMarker)
     const next = await successor.observation()
     expect(next).toMatchObject({ phase: 'ready', saved: { sources: [{ id: 'local' }, { name: 'fixture' }] }, history: { sources: [
-      { id: 'local', hasPublishedData: false }, { id: sourceId, hasPublishedData: true, totals: { calls: 1, input: 5, output: 2 } },
+      { id: 'local', hasPublishedData: false }, { transport: 'otlp', phase: 'receiving',
+        hasPublishedData: true, totals: { calls: 1, input: 5, output: 2 } },
     ] } })
     expect(next).not.toEqual(configuration)
-    expect((await fetch(receiver)).status).toBe(401)
-    expect(await (await fetch(receiver, { headers })).json()).toMatchObject({ sourceId, cursor: 'confirmed-test-cursor' })
+    expect((await fetch(receiver, { method: 'POST' })).status).toBe(401)
+    expect(await (await fetch(receiver, { method: 'POST', headers, body })).json()).toEqual({})
     expect(foreignFeedReads).toBe(0)
     expect(await readFile(oldLedger, 'utf8')).toBe('fixture legacy ledger')
   } finally {
