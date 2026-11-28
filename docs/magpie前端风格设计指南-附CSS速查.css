@@ -1,0 +1,455 @@
+/* ==========================================================================
+   Magpie 前端风格 · CSS 速查（附录 B）
+   配套正文：docs/magpie前端风格设计指南.md
+   用法：整段复制做起点，只改内容与结构，不改这里的数值。
+   每条规则前的 R4.1 / R3.9 注释指回正文的规则号，改值前先读那条规则。
+   基线：yetone/magpie main@33dc51a3d
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   A. Token 层
+   A.1 运行在 Magpie 宿主里：全部走 var(--magpie-*, 兜底值)，兜底值 = 应用原值。
+       这样在宿主内自动跟随主题，独立打开时也能看。
+   -------------------------------------------------------------------------- */
+
+:root {
+  /* 表面：只有这四级（R2.3） */
+  --bg: var(--magpie-bg, #f4f4f6);
+  --card: var(--magpie-card, #ffffff);
+  --card-2: #f9f9fb;              /* 宿主未推送，见 R10.5 */
+  --pill: #f1f1f4;
+  --pill-hover: #e9e9ee;
+  --ctl-fg: #63636b;
+
+  /* 线：轮廓 vs 分隔，分工不能反（R2.3） */
+  --line: var(--magpie-line, #e3e3e8);
+  --line-2: #ececf0;
+
+  /* 墨水：五级，按信息重要性分配（R2.5） */
+  --fg: var(--magpie-fg, #1c1c21);
+  --fg-2: var(--magpie-fg-2, #4b4b53);
+  --muted: var(--magpie-muted, #85858d);
+  --faint: var(--magpie-faint, #b9b9c2);
+
+  /* 强调：四种派生必须成套（R2.9 / R10.4） */
+  --accent: var(--magpie-accent, #4f46e5);
+  --accent-soft: var(--magpie-accent-soft, #eeedfd);
+  --accent-fg: var(--magpie-accent-fg, #ffffff);
+  --sel: #ecebfb;
+
+  /* 语义：只有三色，没有 soft 底（R10.6） */
+  --green: var(--magpie-green, #189a58);
+  --red: var(--magpie-red, #d64545);
+  --amber: var(--magpie-amber, #b45309);
+
+  /* 字体：中文 Windows 的泛型 monospace 是 SimSun，必须显式指定（R5.8） */
+  --font: var(--magpie-font, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+          "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif);
+  --code: var(--magpie-code, ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace);
+
+  /* 动效：只两个曲线（R8.4） */
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --ease-out: cubic-bezier(.23, 1, .32, 1);
+}
+
+/* 深色：只重设颜色与表面，字体/代码/标记不动（R2.1） */
+:root[data-theme="dark"] {
+  --bg: var(--magpie-bg, #1a1a1e);
+  --card: var(--magpie-card, #232327);
+  --card-2: #1f1f23;
+  --pill: #2d2d33;
+  --pill-hover: #36363d;
+  --ctl-fg: #a1a1aa;
+  --line: var(--magpie-line, #333339);
+  --line-2: #2c2c32;
+  --fg: var(--magpie-fg, #ededf1);
+  --fg-2: var(--magpie-fg-2, #b9b9c1);
+  --muted: var(--magpie-muted, #9c9ca6);
+  --faint: var(--magpie-faint, #90909a);
+  --accent: var(--magpie-accent, #a5b4fc);
+  --accent-soft: var(--magpie-accent-soft, #2b2c47);
+  --accent-fg: var(--magpie-accent-fg, #14142a);
+  --sel: #33345a;
+  --green: var(--magpie-green, #6fd99b);
+  --red: var(--magpie-red, #f28b82);
+  --amber: var(--magpie-amber, #f2b544);
+}
+
+/* 首帧：主题值异步到达，先按系统偏好铺底，避免深色用户看到白闪（R10.9）
+   注意这里不能写 var(--bg)：--bg 永远有值，--flash-bg 就永远轮不到 */
+html {
+  background: var(--magpie-bg, var(--flash-bg, #f4f4f6));
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --flash-bg: #1a1a1e; }
+}
+
+/* --------------------------------------------------------------------------
+   B. 基座与栅格
+   -------------------------------------------------------------------------- */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 13px/1.4 var(--font);       /* 唯一排版基座，R5.1 */
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 内容列：1200px = 2×600，视口不足时两侧 16px（R3.1） */
+.workspace {
+  padding-inline: max(16px, calc(50% - 600px));
+  padding-block: 4px 8px;
+  max-width: 100%;
+}
+
+/* --------------------------------------------------------------------------
+   C. 卡片体系
+   -------------------------------------------------------------------------- */
+
+/* C.1 列表卡（多同构行首选，R4.1 / R4.8） */
+.list {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;                 /* 裁掉首尾行的直角，R3.9 */
+  flex: none;
+}
+
+/* 面板态：去掉边框，换成 0 0 0 1px 的描边环（R4.1） */
+body.panel .list {
+  border: 0;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .05), 0 1px 2px rgba(0, 0, 0, .04);
+}
+body.panel.dark .list {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06);
+}
+
+/* C.2 行：左内边距比右多 2px（R3.6）；行高 40 面板 / 48 窗口 */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 5px 9px 5px 11px;
+}
+body.window .row {
+  min-height: 48px;
+  gap: 12px;
+  padding: 7px 12px 7px 14px;
+}
+/* 行分隔只用 --line-2，不做斑马纹、不做整行 hover 底色（R4.3） */
+.row + .row { border-top: 1px solid var(--line-2); }
+
+/* C.3 指标条：1px 缝线用底色透出（R3.9），四格三行（R4.4） */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.kpi {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 14px 11px;
+  background: var(--card);
+}
+.kpi b {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -.01em;
+  font-variant-numeric: tabular-nums;
+}
+/* 单位是小一号、muted、带 .u 包裹，不要跟数字同字号（图 1 的 23M TOKEN） */
+.kpi b .u {
+  font-style: normal;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  margin: 0 3px 0 2px;
+}
+.kpi span {
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;            /* 中文下调到 .02em，R5.9 */
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.kpi small {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* C.4 图表卡：柱子 72px、双色（柱身 opacity .38 + 柱帽实色），峰值右上（R4.6） */
+.chart {
+  margin-top: 8px;
+  padding: 12px 14px 8px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.chart .bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 72px;
+  border-bottom: 1px solid var(--line-2);
+}
+.chart .bar i.in { opacity: .38; }
+.chart .peak {
+  font-size: 10.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* C.5 单卡（只有 1–2 个数时，不要硬塞进 KPI 条，R4.8） */
+.card {
+  padding: 12px 14px 11px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-width: 0;
+}
+
+/* 卡与卡之间 8px（R3.4） */
+.card + .card, .list + .list, .stats + .card, .card + .stats { margin-top: 8px; }
+
+/* --------------------------------------------------------------------------
+   D. 排版
+       只有六档：13 / 12.5 / 11.5 / 11 / 10.5 / 9.5（R5.1）
+   -------------------------------------------------------------------------- */
+
+/* 行主文：13/500/-.005em（全站唯一一处 -.005em，R5.2） */
+.name {
+  font-weight: 500;
+  letter-spacing: -.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;                     /* 缺这行，省略号不生效，R5.4 */
+}
+/* 行副文：11.5/400/muted */
+.sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+/* 卡片标题：12.5/600 */
+.card-title {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+/* 区块标签：11/600/大写/.05em/muted —— 整个界面的「小标题」只有这一种 */
+.label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;        /* 中文内容请去掉 uppercase，仅留字距 */
+  color: var(--muted);
+}
+
+/* --------------------------------------------------------------------------
+   E. 数字与单位
+   -------------------------------------------------------------------------- */
+
+/* 所有会变动的数字：KPI、金额、计数列、轴刻度（R6.11） */
+.num, .kpi b, td.num, .amount {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 货币：符号紧贴数字、靠右对齐、与左侧标签同基线（R4.7）
+   HTML：<span class="amount">¥86.40</span>
+   值必须来自 fmtCost($) —— 0 且已计价 $0.000，缺价用 —（R6.5） */
+
+/* 组合量必须带单位：23M TOKEN / 158M 缓存读取 / 705 次调用（R6.10）
+   中文单位前一个半角空格（1.2 万），英文后缀紧贴（21M）（R6.2） */
+
+/* --------------------------------------------------------------------------
+   F. 符号：点、徽章、胶囊、失败叉
+   -------------------------------------------------------------------------- */
+
+/* 状态点：6px 主档；只能靠形状区分失败，不能只靠颜色（R2.6 / R7.2） */
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  flex: none;
+}
+.dot.fail {
+  background: var(--red);
+  /* 把点变成 × 形状：mask + 放大 1.5（视觉 6 → 9px，R7.3） */
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 2l6 6M8 2l-6 6' stroke='%23000' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 2l6 6M8 2l-6 6' stroke='%23000' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  border-radius: 0;
+  transform: scale(1.5);
+}
+
+/* 徽章：9.5/600/.04em/大写/1px 5px 内边距/圆角 4 —— 只标离散属性（R7.7） */
+.badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  background: var(--card-2);
+  color: var(--fg-2);
+}
+.badge.up { color: var(--green); background: color-mix(in oklab, var(--green) 12%, transparent); }
+.badge.down { color: var(--red); background: color-mix(in oklab, var(--red) 12%, transparent); }
+
+/* 胶囊：高 25、圆角 999、内边距 0 5px 0 10px（左侧留图标位） */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 25px;
+  padding: 0 5px 0 10px;
+  border-radius: 999px;
+  background: var(--pill);
+  font-size: 12px;
+}
+.chip:hover { background: var(--pill-hover); }
+
+/* 段控：track 用 pill 底，thumb 用 card 底 + 1px 边（图 1 的顶部导航） */
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--pill);
+}
+.segmented > * {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
+.segmented > [aria-current="page"],
+.segmented > [aria-pressed="true"] {
+  background: var(--card);
+  color: var(--fg);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+/* --------------------------------------------------------------------------
+   G. 表格
+   -------------------------------------------------------------------------- */
+
+.table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.table th, .table td { padding: 6px 9px; text-align: start; }
+.table thead th {
+  padding-block: 7px 6px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--fg-2);
+}
+.table tbody tr + tr > * { border-top: 1px solid var(--line-2); }  /* 无斑马纹，R4.3 */
+.table tbody tr:hover > * { background: var(--pill); }
+
+/* --------------------------------------------------------------------------
+   H. 空态与骨架
+   -------------------------------------------------------------------------- */
+
+/* 空态只有两行：结论（fg/500）+ 指引（muted/400），不插画不堆按钮（R4.9） */
+.empty-state {
+  padding: 36px 20px;
+  text-align: center;
+  color: var(--muted);
+}
+.empty-state b {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* 骨架必须叠在真实卡片类名上，保证加载前后高度一致（R4.10）
+   HTML：<div class="card skeleton-card"> */
+.skeleton {
+  background: linear-gradient(90deg, var(--pill) 25%, var(--pill-hover) 45%, var(--pill) 65%);
+  background-size: 240% 100%;
+  animation: skeleton-shift 1.4s ease-in-out infinite;
+  color: transparent;
+  pointer-events: none;
+}
+.skeleton-card { min-height: 78px; }
+@keyframes skeleton-shift {
+  from { background-position: 120% 0; }
+  to { background-position: -20% 0; }
+}
+
+/* --------------------------------------------------------------------------
+   I. 交互状态与动效
+   -------------------------------------------------------------------------- */
+
+/* 焦点：全站唯一基线，不许按组件改写（R8.x）
+   注意：:focus-visible 不要与其他选择器写在同一张列表里（Safari <15.4 会整条丢弃） */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 按下：统一 scale(.96)，只动 transform（R8.4） */
+button:active, .button:active { transform: scale(.96); }
+
+/* 过渡：写具体属性，不写 all；数字跳变位置不要过渡（R8.4） */
+button, .button, .chip, .segmented > * {
+  transition: background-color .12s var(--ease-out), color .12s var(--ease-out),
+              transform .16s var(--ease);
+}
+
+/* 禁用：只降不透明度，不改文字色（R8.3） */
+:disabled, [aria-disabled="true"] { opacity: .5; cursor: default; }
+
+/* 动效降级：全局兜底一次，不要逐组件重复（R8.5） */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-property: none !important;
+  }
+  .skeleton { animation: none; }
+}
+
+/* --------------------------------------------------------------------------
+   J. 插件页 iframe 专属（只有这 15 个变量可用，R10.3）
+       独立打开时要靠兜底值；嵌进宿主后由 --magpie-* 覆盖。
+   -------------------------------------------------------------------------- */
+
+/* 15 个：bg card fg fg-2 muted faint line accent accent-soft accent-fg
+          green red amber font code
+   缺失 6 个必须自带：card-2 pill pill-hover line-2 ctl-fg sel（R10.5） */
+.plugin-body {
+  margin: 0;
+  padding: 20px 24px;               /* 与宿主 :where() 基线同值，R10.15 */
+  font: 13px/1.45 var(--magpie-font, -apple-system, "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif);
+  color: var(--magpie-fg, #1c1c21);
+  background: var(--magpie-bg, #f4f4f6);
+}
+
+/* 插件里的强调块必须成对，深色下 accent 是浅紫（R10.4） */
+.plugin-primary {
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  background: var(--magpie-accent, #4f46e5);
+  color: var(--magpie-accent-fg, #ffffff);
+}
+
+/* 不要在插件页写 height: 100vh（R10.12）；长内容自己滚（R10.13） */
+.plugin-scroll { overflow: auto; max-height: 100%; }
