@@ -26,8 +26,7 @@ let rowsRequest
 let retryTimer
 let retryRange
 let pageState
-let dateTime
-let shortTime
+let timeFormats
 let chartPoints = []
 let selectedPoint = 0
 const expandedModels = new Set()
@@ -60,9 +59,9 @@ function updateNavigation() {
   byId('rows-section').hidden = state.view !== 'details'
   byId('model-field').hidden = state.view !== 'details'
   byId('bucket').value = state.bucket
-  byId('detail-range').hidden = !state.detailFrom || !dateTime
+  byId('detail-range').hidden = !state.detailFrom || !timeFormats
   byId('back-overview').hidden = !state.detailFrom
-  if (state.detailFrom && dateTime) byId('detail-range').textContent = `${formatTime(state.detailFrom)} 至 ${formatTime(state.detailTo)}（结束时间不含）`
+  if (state.detailFrom && timeFormats) byId('detail-range').textContent = formatRange(state.detailFrom, state.detailTo)
 }
 
 function element(tag, text, className) {
@@ -83,7 +82,27 @@ function note(parent, text) { parent.append(element('small', text, 'detail-meta'
 function pair(left, right) { return `${number.format(left)} / ${number.format(right)}` }
 function tokens(totals) { return totals.input + totals.output }
 function cost(value) { return value > 0 && value < 1e-10 ? '<$0.0000000001' : `$${dollars.format(value)}` }
-function formatTime(value) { return dateTime.format(Date.parse(value)) }
+
+function createTimeFormats(timeZone) {
+  const format = options => new Intl.DateTimeFormat('zh-CN', { timeZone, ...options })
+  const day = { month: 'short', day: 'numeric' }
+  const clock = { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }
+  return {
+    day: format(day), date: format({ ...day, year: 'numeric' }), year: format({ year: 'numeric' }),
+    clock: format(clock), full: format({ ...clock, year: 'numeric', month: 'numeric', day: 'numeric' }),
+  }
+}
+
+function formatRange(from, to) {
+  const start = Date.parse(from)
+  const end = Date.parse(to)
+  const { clock, date, day, year } = timeFormats
+  const currentYear = year.format(Date.parse(usage.readAt))
+  const dateLabel = instant => (year.format(instant) === currentYear ? day : date).format(instant)
+  const clockLabel = instant => clock.format(instant).replace(/:00$/, '')
+  const endDate = date.format(start) === date.format(end) ? '' : `${dateLabel(end)} `
+  return `${dateLabel(start)} ${clockLabel(start)} – ${endDate}${clockLabel(end)}`
+}
 
 function compactValue(node, value, label) {
   node.textContent = value === null ? '—' : shortNumber.format(value)
@@ -95,10 +114,12 @@ function compactValue(node, value, label) {
   node.setAttribute('aria-label', exact)
 }
 
-function appendTime(parent, value) {
-  const time = element('time', formatTime(value))
+function appendTime(parent, value, today) {
+  const instant = Date.parse(value)
+  const date = timeFormats.date.format(instant) === today ? '' : `${timeFormats.day.format(instant)} `
+  const time = element('time', `${date}${timeFormats.clock.format(instant)}`)
   time.dateTime = value
-  time.title = value
+  time.title = timeFormats.full.format(instant)
   parent.append(time)
 }
 
@@ -163,14 +184,6 @@ function selectSource(sourceId) {
   if (state.view === 'details') void loadRows(0)
 }
 
-function sourceButton(source) {
-  const button = element('button', source.name, 'text-action')
-  button.type = 'button'
-  button.setAttribute('aria-pressed', String(state.sourceId === source.id))
-  button.addEventListener('click', () => { selectSource(state.sourceId === source.id ? '' : source.id); byId('source').focus() })
-  return button
-}
-
 function chartPath(values, width, height, inset) {
   const max = Math.max(0, ...values) || 1
   const coordinates = values.map((value, index) => {
@@ -180,11 +193,8 @@ function chartPath(values, width, height, inset) {
   return values.length === 1 ? `M${coordinates[0]}h0.1` : `M${coordinates.join('L')}`
 }
 
-function metricColumn(totals, denominator, published = true) {
-  const value = metricValue(totals)
-  const amount = element('span', published ? metricText(totals) : '—', 'list-number')
-  if (state.metric === 'cost' && totals.unpriced) note(amount, `缺价 ${number.format(totals.unpriced)} 条`)
-  const ratio = published && denominator > 0 ? value / denominator : null
+function metricShare(totals, denominator, published = true) {
+  const ratio = published && denominator > 0 ? metricValue(totals) / denominator : null
   const share = element('span', undefined, 'list-share')
   const bar = element('meter')
   bar.setAttribute('aria-hidden', 'true')
@@ -192,11 +202,22 @@ function metricColumn(totals, denominator, published = true) {
   bar.max = 1
   bar.value = ratio ?? 0
   share.append(bar, element('span', ratio === null ? '—' : percent.format(ratio)))
-  return [amount, share]
+  return share
 }
 
-function sourceRow(source, denominator) {
-  const row = element('li', undefined, 'usage-row source-row')
+function sourceCard(source, denominator) {
+  const item = element('li')
+  const button = element('button', undefined, 'panel source-card')
+  const name = element('span', source.name, 'source-name')
+  const totals = source.totals
+  const amount = element('strong', source.hasPublishedData ? metricText(totals) : '—', 'source-value')
+  const secondaryMetrics = [
+    ...(state.metric === 'tokens' ? [] : [`${number.format(tokens(totals))} Token`]),
+    ...(state.metric === 'calls' ? [] : [`${number.format(totals.calls)} 次`]),
+    ...(state.metric === 'cost' ? [] : [`${cost(totals.cost)} 已计价`]),
+    ...(totals.unpriced ? [`缺价 ${number.format(totals.unpriced)} 条`] : []),
+  ]
+  const secondary = element('span', source.hasPublishedData ? secondaryMetrics.join(' · ') : '用量准备中', 'detail-meta source-meta')
   const sparkline = element('span', undefined, 'source-sparkline')
   if (source.buckets.length) {
     const spark = document.createElementNS(svgNamespace, 'svg')
@@ -208,8 +229,23 @@ function sourceRow(source, denominator) {
     spark.append(line)
     sparkline.append(spark)
   }
-  row.append(sourceButton(source), ...metricColumn(source.totals, denominator, source.hasPublishedData), sparkline)
-  return row
+  button.id = `source-card-${source.id}`
+  name.id = `source-name-${source.id}`
+  amount.id = `source-value-${source.id}`
+  secondary.id = `source-meta-${source.id}`
+  const share = metricShare(totals, denominator, source.hasPublishedData)
+  share.id = `source-share-${source.id}`
+  button.type = 'button'
+  button.setAttribute('aria-labelledby', name.id)
+  button.setAttribute('aria-describedby', `${amount.id} ${secondary.id} ${share.id}`)
+  button.setAttribute('aria-pressed', String(state.sourceId === source.id))
+  button.addEventListener('click', () => {
+    selectSource(state.sourceId === source.id ? '' : source.id)
+    byId(button.id)?.focus({ preventScroll: true })
+  })
+  button.append(name, amount, secondary, sparkline, share)
+  item.append(button)
+  return item
 }
 
 function selectView(view) {
@@ -270,7 +306,9 @@ function modelRow(item, denominator, index) {
   }
   expand(expandedModels.has(item.model))
   toggle.addEventListener('click', () => expand(details.hidden))
-  row.append(link, ...metricColumn(totals, denominator), toggle, details)
+  const amount = element('span', metricText(totals), 'list-number')
+  if (state.metric === 'cost' && totals.unpriced) note(amount, `缺价 ${number.format(totals.unpriced)} 条`)
+  row.append(link, amount, metricShare(totals, denominator), toggle, details)
   return row
 }
 
@@ -282,7 +320,7 @@ function inspectPoint(index) {
   selectedPoint = Math.max(0, Math.min(chartPoints.length - 1, index))
   const point = chartPoints[selectedPoint]
   const totals = point.totals
-  const time = `${formatTime(point.from)} 至 ${formatTime(point.to)}`
+  const time = formatRange(point.from, point.to)
   const values = `${number.format(tokens(totals))} Token · 输入 / 输出 ${pair(totals.input, totals.output)} · ${number.format(totals.calls)} 次 · ${cost(totals.cost)} 已计价 · 缺价 ${number.format(totals.unpriced)} 条`
   byId('point-time').textContent = time
   byId('point-value').textContent = values
@@ -321,14 +359,20 @@ function renderChart() {
   const ticks = max ? [max, max / 2, 0] : [0]
   byId('y-axis').replaceChildren(...ticks.map(value => element('span', state.metric === 'cost' ? cost(value) : shortNumber.format(value))))
   const indices = [...new Set([0, Math.floor((values.length - 1) / 2), values.length - 1])]
-  byId('x-axis').replaceChildren(...indices.map(index => element('span', shortTime.format(Date.parse(chartPoints[index].from)))))
+  const multiDay = timestamp(usage.range.to) - timestamp(usage.range.from) > 86_400_000
+  byId('x-axis').replaceChildren(...indices.map(index => {
+    const instant = Date.parse(chartPoints[index].from)
+    const day = timeFormats.day.format(instant)
+    const hour = timeFormats.clock.format(instant).slice(0, 2)
+    return element('span', usage.grain === 'hour' ? (multiDay ? `${day} ${hour}` : hour) : day)
+  }))
   inspectPoint(selectedPoint)
 }
 
 function renderLists(sources, totals) {
   const denominator = usage.sources.reduce((sum, source) => sum + metricValue(source.totals), 0)
   byId('source-metric').textContent = `${metricLabels[state.metric]}占比`
-  byId('summary-rows').replaceChildren(...usage.sources.map(source => sourceRow(source, denominator)))
+  byId('summary-rows').replaceChildren(...usage.sources.map(source => sourceCard(source, denominator)))
   const models = combine(sources, 'models', 'model').sort((left, right) => metricValue(right.totals) - metricValue(left.totals) || left.model.localeCompare(right.model))
   byId('model-sort').textContent = `按${metricLabels[state.metric]}降序`
   byId('model-rows').replaceChildren(...models.map((item, index) => modelRow(item, metricValue(totals), index)))
@@ -368,9 +412,12 @@ function render() {
   compactValue(byId('kpi-reasoning'), published ? totals.reasoning : null, '推理 Token')
   compactValue(byId('kpi-calls'), published ? totals.calls : null, '计量次数')
   byId('calls-note').textContent = callsNotes[usage.via]
-  byId('range-label').textContent = `${scopeNames[usage.via]} · ${formatTime(usage.range.from)} 至 ${formatTime(usage.range.to)}（${usage.range.timeZone}，结束时间不含）`
-  byId('read-at').dateTime = usage.readAt
-  byId('read-at').textContent = formatTime(usage.readAt)
+  byId('range-label').textContent = `${scopeNames[usage.via]} · ${formatRange(usage.range.from, usage.range.to)}`
+  const readAt = byId('read-at')
+  const readInstant = Date.parse(usage.readAt)
+  readAt.dateTime = usage.readAt
+  readAt.textContent = timeFormats.clock.format(readInstant)
+  readAt.title = timeFormats.full.format(readInstant)
   setOptions('source', [['', '全部来源'], ...usage.sources.map(source => [source.id, source.name])], state.sourceId)
   const models = renderLists(sources, totals)
   byId('usage-empty').hidden = models.length > 0
@@ -387,13 +434,13 @@ function render() {
   byId('results').hidden = false
 }
 
-function detailRow(item) {
+function detailRow(item, today) {
   const row = element('tr')
   const source = usage.sources.find(source => source.id === item.sourceId)
   const primaryUsage = item.input + item.output > 0
   const isOtlp = source?.transport === 'otlp'
   const hasUsage = primaryUsage || (isOtlp && item.cacheRead + item.cacheWrite > 0)
-  appendTime(cell(row, '', true), item.t)
+  appendTime(cell(row, '', true), item.t, today)
   cell(row, source?.name ?? '来源')
   cell(row, item.model || '未标注模型')
   const via = cell(row, viaNames[item.via] ?? '未标注分项')
@@ -444,7 +491,8 @@ async function loadRows(index) {
   try {
     const details = await query('usage/rows', params, controller.signal)
     if (controller !== rowsRequest) return
-    byId('detail-rows').replaceChildren(...details.rows.map(detailRow))
+    const today = timeFormats.date.format(new Date())
+    byId('detail-rows').replaceChildren(...details.rows.map(item => detailRow(item, today)))
     byId('rows-table').hidden = !details.rows.length
     byId('rows-notice').textContent = details.rows.length ? '' : visibleSources().some(source => source.hasPublishedData) ? '此时段暂无用量' : '用量准备中'
     byId('current-page').textContent = `第 ${number.format(index + 1)} 页`
@@ -512,18 +560,11 @@ async function refresh(startupRetries = 0, pinnedRange) {
     }
     if (controller !== activeRequest) return
     if (!validRange(data.range.from, data.range.to) || !Array.isArray(data.sources)) throw new Error('query_failed')
-    const timeZone = data.range.timeZone
-    const nextDateTime = new Intl.DateTimeFormat('zh-CN', { timeZone, month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset' })
-    const date = { month: '2-digit', day: '2-digit' }
-    const withDate = timestamp(data.range.to) - timestamp(data.range.from) > 86_400_000
-    const nextShortTime = new Intl.DateTimeFormat('zh-CN', bucket === 'hour'
-      ? { timeZone, ...(withDate ? date : {}), hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }
-      : { timeZone, ...date })
+    const nextTimeFormats = createTimeFormats(data.range.timeZone)
     const sources = data.sources.sort((left, right) => Number(right.id === 'local') - Number(left.id === 'local') || left.name.localeCompare(right.name))
     usage = { ...data, sources, key, readAt: new Date().toISOString(), grain: bucket, via: state.via,
       hourLimited: requestedGrain === 'hour' && bucket === 'day', trendLimited: !bucket }
-    dateTime = nextDateTime
-    shortTime = nextShortTime
+    timeFormats = nextTimeFormats
     const missingSource = state.sourceId && !sources.some(source => source.id === state.sourceId)
     if (missingSource) { state.sourceId = ''; state.model = null }
     if (!pinnedRange || missingSource) resetRows()
@@ -565,7 +606,7 @@ for (const period of periods) byId(`period-${period}`).addEventListener('click',
   void refresh()
 })
 
-byId('custom-range').addEventListener('submit', event => {
+function applyCustomRange(event) {
   event.preventDefault()
   const from = byId('from').value.trim()
   const to = byId('to').value.trim()
@@ -575,6 +616,12 @@ byId('custom-range').addEventListener('submit', event => {
   byId('range-error').textContent = ''
   updateNavigation()
   void refresh()
+}
+
+byId('custom-range').addEventListener('submit', applyCustomRange)
+byId('apply-range').addEventListener('click', applyCustomRange)
+for (const field of ['from', 'to']) byId(field).addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.isComposing) applyCustomRange(event)
 })
 byId('via').addEventListener('change', () => { state.via = byId('via').value; updateNavigation(); void refresh() })
 byId('source').addEventListener('change', () => selectSource(byId('source').value))

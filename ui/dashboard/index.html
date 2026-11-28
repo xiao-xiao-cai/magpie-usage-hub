@@ -37,7 +37,7 @@
     <form id="custom-range" class="range-form panel" hidden>
       <label for="from">开始时间<input id="from" type="text" required maxlength="40" placeholder="2026-11-27T08:00:00+08:00" autocomplete="off" spellcheck="false" aria-describedby="range-hint"></label>
       <label for="to">结束时间<input id="to" type="text" required maxlength="40" placeholder="2026-11-27T09:00:00+08:00" autocomplete="off" spellcheck="false" aria-describedby="range-hint"></label>
-      <button class="primary" type="submit">应用时间</button>
+      <button id="apply-range" class="primary" type="button">应用时间</button>
       <small id="range-hint" class="muted">使用带时区偏移或 Z 的时间。区间含开始、不含结束。</small>
       <span id="range-error" role="status"></span>
     </form>
@@ -50,7 +50,7 @@
       <div class="scope-bar">
         <label class="inline-field" for="source">来源 <select id="source"><option value="">全部来源</option></select></label>
         <label id="model-field" class="inline-field" for="model" hidden>模型 <select id="model"><option value="">全部模型</option></select></label>
-        <div class="scope-time muted"><span id="range-label"></span><span>汇总读取于 <time id="read-at"></time></span></div>
+        <div class="scope-time muted"><span id="range-label"></span><span>更新于 <time id="read-at"></time></span></div>
       </div>
       <div id="overview">
         <p id="usage-empty" class="usage-empty" hidden></p>
@@ -87,10 +87,10 @@
         </section>
         <section class="list-section" aria-labelledby="sources-heading">
           <div class="toolbar list-heading"><h2 id="sources-heading" class="section-heading">来源分布</h2><small id="source-metric" class="muted"></small></div>
-          <ul id="summary-rows" class="usage-list" role="list" aria-labelledby="sources-heading"></ul>
+          <ul id="summary-rows" class="source-cards" role="list" aria-labelledby="sources-heading"></ul>
         </section>
-        <section class="list-section" aria-labelledby="models-heading">
-          <div class="toolbar list-heading"><h2 id="models-heading" class="section-heading">模型排行</h2><small id="model-sort" class="muted"></small></div>
+        <section class="panel list-panel" aria-labelledby="models-heading">
+          <div class="toolbar"><h2 id="models-heading" class="section-heading">模型排行</h2><small id="model-sort" class="muted"></small></div>
           <p id="models-empty" class="empty" hidden>所选范围内暂无模型用量。</p>
           <ul id="model-rows" class="usage-list" role="list" aria-labelledby="models-heading"></ul>
         </section>

@@ -145,6 +145,11 @@ a:hover { text-decoration: underline; }
 
 .panel, .table-card { min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
 .panel { padding: 12px 14px 11px; }
+.list-panel { padding: 0; overflow: clip; }
+.list-panel > .toolbar { padding: 8px 14px; }
+.list-panel > ul { list-style: none; margin: 0; padding: 0; }
+.list-panel > ul > li { border-block-start: 1px solid var(--line-2); }
+.list-panel > ul > li:is(:hover, :focus-within) { background: var(--pill); }
 .section-heading { margin: 0; font-size: 12px; font-weight: 600; }
 .muted, small { color: var(--muted); }
 .table-scroll { min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }

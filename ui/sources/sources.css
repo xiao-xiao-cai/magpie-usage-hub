@@ -1,15 +1,13 @@
 .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .sources-header { margin-block-end: 6px; }
-.source-list { list-style: none; margin: 0; padding: 0; border-block: 1px solid var(--line); }
-.source-list-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(7rem, 17%) minmax(9rem, 22%) auto; align-items: center; gap: 4px 12px; min-height: 38px; padding: 5px 8px; font-size: 12px; }
-.source-list-row + .source-list-row { border-block-start: 1px solid var(--line-2); }
-.source-list-row:is(:hover, :focus-within) { background: var(--pill); }
+#sources-empty { margin: 0; padding: 14px; border-block-start: 1px solid var(--line-2); }
+.source-list-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(7rem, 17%) minmax(9rem, 22%) auto; align-items: center; gap: 4px 12px; min-height: 38px; padding: 5px 14px; font-size: 12px; }
 .source-list-name { font-weight: 600; overflow-wrap: anywhere; }
 .source-list-time { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .source-list-action { justify-self: end; }
 #editor { max-width: 48rem; }
 #editor > .source-block { margin-block-start: 8px; }
-.source-block > h3 { margin-block-end: 6px; }
+.source-block > h3 { margin-block-end: 6px; padding-block-end: 6px; border-block-end: 1px solid var(--line-2); }
 .source-facts { display: grid; grid-template-columns: minmax(6rem, 30%) minmax(0, 1fr); gap: 5px 12px; margin: 8px 0 0; }
 .source-facts dt { color: var(--muted); }
 .source-facts dd { margin: 0; overflow-wrap: anywhere; }

@@ -66,6 +66,7 @@ function dashboardHarness(search = '') {
     },
   })
   return { control, requests, location, timers,
+    sourceCards: () => control('summary-rows').children.map(item => item.children[0]),
     setClock(value: string) { currentTime = Date.parse(value) },
     click(id: string) { control(id).dispatchEvent(new Event('click')) },
     change(id: string, value: string) { control(id).value = value; control(id).dispatchEvent(new Event('change')) },
@@ -92,14 +93,17 @@ describe('dashboard page', () => {
     expect(ui.control('billed').textContent).toBe('$0.002 USD')
     expect(ui.control('unpriced').textContent).toBe('缺价 2 条')
     expect(ui.control('model-rows').children).toHaveLength(1)
-    const [center, remote] = ui.control('summary-rows').children
+    const [center, remote] = ui.sourceCards()
     expect(center.children[0].textContent).toBe(local.name)
     expect(center.children[1].textContent).toBe('23 Token')
-    expect(remote.children[2].children[1].textContent).toBe('50%')
-    expect(remote.children[3].children[0].children[0].attributes.get('d')).toMatch(/^M/u)
+    expect(remote.children[2].textContent).toBe('2 次 · $0.001 已计价 · 缺价 1 条')
+    expect(remote.children[4].children[1].textContent).toBe('50%')
+    const sparkline = remote.children[3].children[0].children[0]
+    expect(sparkline.attributes.get('d')).toMatch(/^M/u)
     ui.click('metric-cost')
     expect(ui.control('plot').attributes.get('aria-valuetext')).toContain('$0.002 已计价 · 缺价 2 条')
-    expect(ui.control('summary-rows').children[1].children[1].children[0].textContent).toBe('缺价 1 条')
+    expect(ui.sourceCards()[1].children[1].textContent).toBe('$0.001')
+    expect(ui.sourceCards()[1].children[2].textContent).toBe('23 Token · 2 次 · 缺价 1 条')
     ui.control('plot').dispatchEvent(Object.assign(new Event('keydown'), { key: 'Home' }))
     expect(ui.control('plot').attributes.get('aria-valuenow')).toBe('1')
     ui.control('plot').dispatchEvent(Object.assign(new Event('keydown'), { key: 'ArrowRight' }))
@@ -113,26 +117,31 @@ describe('dashboard page', () => {
     const archived = { ...local, id: '3f0ba490-10ed-4286-8e7a-4b8133ac7544', name: '历史来源', transport: 'legacy', freshness: 'historical' }
     const paused = { ...windows, id: '82a264b4-a051-4dde-9fdf-1ffe9f022ebc', name: '另一设备', freshness: 'paused' }
     await ui.reply(0, { range, sources: [archived, waiting, active, paused] })
-    const { children: sourceRows } = ui.control('summary-rows')
-    expect(sourceRows).toHaveLength(4)
-    expect(sourceRows[0].children[0].textContent).toBe(local.name)
-    expect(sourceRows[0].children[2].children[1].textContent).toBe('96.4%')
-    expect(sourceRows.find(item => item.children[0].textContent === waiting.name)?.children[1].textContent).toBe('—')
+    const cards = ui.sourceCards()
+    expect(cards).toHaveLength(4)
+    expect(cards[0].children[0].textContent).toBe(local.name)
+    expect(cards[0].children[4].children[1].textContent).toBe('96.4%')
+    expect(cards.find(item => item.children[0].textContent === waiting.name)?.children[1].textContent).toBe('—')
     const indicator = ui.control('kpi-tokens')
     expect(indicator).toMatchObject({ textContent: '1.3K', tabIndex: 0 })
     expect(indicator.attributes.get('role')).toBe('group')
     expect(indicator.attributes.get('aria-label')).toBe('Token 1,280')
     expect(indicator.attributes.get('data-exact')).toBe('Token 1,280')
-    sourceRows[0].children[0].dispatchEvent(new Event('click'))
+    cards[0].dispatchEvent(new Event('click'))
     expect(ui.control('source').value).toBe('local')
     expect(ui.control('kpi-tokens').attributes.get('data-exact')).toBe('Token 1,234')
+    expect(ui.sourceCards()[0].attributes.get('aria-pressed')).toBe('true')
+    expect(ui.sourceCards()[0].children[4].children[1].textContent).toBe('96.4%')
+    ui.sourceCards()[0].dispatchEvent(new Event('click'))
+    expect(ui.control('source').value).toBe('')
+    expect(ui.sourceCards()[0].attributes.get('aria-pressed')).toBe('false')
   })
 
   test('keeps the complete registration list when a source is selected and restores the scoped configuration return', async () => {
     const ui = dashboardHarness('?period=30d&via=conversation&layout=cards&secret=ignored')
     expect(ui.params(0)).toEqual({ period: '30d', via: 'conversation', bucket: 'day' })
     await ui.reply(0, { range, sources: [local, waiting] })
-    ui.control('summary-rows').children[0].children[0].dispatchEvent(new Event('click'))
+    ui.sourceCards()[0].dispatchEvent(new Event('click'))
     expect(ui.control('register-banner').hidden).toBe(true)
     expect(ui.control('source').value).toBe('local')
     expect(ui.control('kpi-tokens').textContent).toBe('23')
@@ -175,7 +184,10 @@ describe('dashboard page', () => {
     expect(ui.control('kpi-tokens').textContent).toBe('0')
     expect(ui.control('billed').textContent).toBe('$0.00 USD')
     expect(ui.control('summary-rows').children).toHaveLength(2)
-    expect(ui.control('summary-rows').children[0].children[2].children[1].textContent).toBe('—')
+    expect(ui.sourceCards()[0].children[4].children[1].textContent).toBe('—')
+    ui.click('metric-cost')
+    expect(ui.sourceCards()[0].children[1].textContent).toBe('$0.00')
+    expect(ui.sourceCards()[0].children[4].children[1].textContent).toBe('—')
     ui.click('view-details')
     await ui.reply(2, { rows: [], nextPage: null })
     expect(ui.control('rows-notice').textContent).toBe('此时段暂无用量')
@@ -235,7 +247,7 @@ describe('dashboard page', () => {
     expect(ui.params(1)).toEqual(filters)
     await ui.reply(1, { rows: [row], nextPage: 'fixture-next-page' })
     const detail = ui.control('detail-rows').children[0]
-    expect(detail.children[0].children[0].dateTime).toBe(row.t)
+    expect(detail.children[0].children[0]).toMatchObject({ dateTime: row.t, textContent: '08:00:00', title: '2026/11/27 08:00:00' })
     expect(detail.children[1].textContent).toBe(windows.name)
     expect(detail.children[3].textContent).toBe('OTLP 会话')
     expect(detail.children[5].children[0].textContent).toBe('缓存计数未知')
@@ -261,20 +273,31 @@ describe('dashboard page', () => {
 
   test('pins a grain change to the visible range, falls back to days and preserves bucket drilldown', async () => {
     const ui = dashboardHarness('?period=30d&via=conversation&sourceId=local')
-    await ui.reply(0, { range, sources: [local, windows] })
+    const summary = { range: { ...range, timeZone: 'America/Los_Angeles' }, sources: [local, windows] }
+    await ui.reply(0, summary)
+    expect(ui.control('range-label').textContent).toBe('会话 · 11月26日 16:00 – 18:00')
+    expect(ui.control('read-at')).toMatchObject({ dateTime: observedAt, textContent: '02:00:00', title: '2026/11/27 02:00:00' })
+    expect(ui.control('x-axis').children[0].textContent).toBe('11月26日')
     const pinned = { from: range.from, to: range.to, via: 'conversation' }
     ui.change('bucket', 'hour')
     expect(ui.params(1)).toEqual({ ...pinned, bucket: 'hour' })
     await ui.reply(1, { error: { code: 'bucket_range_too_large' } }, 400)
     expect(ui.params(2)).toEqual({ ...pinned, bucket: 'day' })
-    await ui.reply(2, { range, sources: [local, windows] })
+    await ui.reply(2, summary)
     expect(ui.control('grain').textContent).toContain('按日')
     ui.control('plot').dispatchEvent(Object.assign(new Event('keydown', { cancelable: true }), { key: 'Home' }))
+    const pointTime = '11月26日 16:00 – 17:00'
+    expect(ui.control('point-time').textContent).toBe(pointTime)
+    expect(ui.control('plot').attributes.get('aria-valuetext')).toStartWith(pointTime)
     ui.control('plot').dispatchEvent(Object.assign(new Event('keydown', { cancelable: true }), { key: 'Enter' }))
     const detail = { ...pinned, to: middle, sourceId: 'local' }
     expect(ui.params(3)).toEqual(detail)
     expect(ui.control('detail-range').hidden).toBe(false)
+    expect(ui.control('detail-range').textContent).toBe(pointTime)
     await ui.reply(3, { rows: [row], nextPage: 'pending' })
+    expect(ui.control('detail-rows').children[0].children[0].children[0]).toMatchObject({
+      dateTime: row.t, textContent: '11月26日 16:00:00', title: '2026/11/26 16:00:00',
+    })
     ui.click('next-rows')
     expect(ui.params(4)).toEqual({ ...detail, page: 'pending' })
     const back = new URL(ui.control('settings').href, 'https://fixture.example/dashboard/').searchParams.get('back')!
@@ -293,15 +316,20 @@ describe('dashboard page', () => {
     await ui.reply(0, { range, sources: [local] })
     ui.click('period-custom')
     ui.control('from').value = '2026-02-30T00:00:00Z'
-    ui.control('custom-range').dispatchEvent(new Event('submit', { cancelable: true }))
+    ui.click('apply-range')
     expect(ui.control('range-error').textContent).toContain('有效起止')
     expect(ui.requests).toHaveLength(1)
     ui.control('from').value = '2024-01-01T08:00:00+08:00'
-    ui.control('custom-range').dispatchEvent(new Event('submit', { cancelable: true }))
-    expect(ui.params(1)).toEqual({ from: '2024-01-01T08:00:00+08:00', to: range.to, bucket: 'day', via: 'through' })
+    ui.control('to').dispatchEvent(Object.assign(new Event('keydown', { cancelable: true }), { key: 'Enter', isComposing: true }))
+    expect(ui.requests).toHaveLength(1)
+    ui.control('to').value = '2026-11-27T02:00:23.000Z'
+    ui.control('to').dispatchEvent(Object.assign(new Event('keydown', { cancelable: true }), { key: 'Enter' }))
+    const custom = { from: '2024-01-01T08:00:00+08:00', to: '2026-11-27T02:00:23.000Z', timeZone: range.timeZone }
+    expect(ui.params(1)).toEqual({ from: custom.from, to: custom.to, bucket: 'day', via: 'through' })
     await ui.reply(1, { error: { code: 'bucket_range_too_large' } }, 400)
     expect(ui.params(2)).not.toHaveProperty('bucket')
-    await ui.reply(2, { range, sources: [{ ...local, buckets: [] }] })
+    await ui.reply(2, { range: custom, sources: [{ ...local, buckets: [] }] })
+    expect(ui.control('range-label').textContent).toBe('网关 · 2024年1月1日 08:00 – 11月27日 10:00:23')
     expect(ui.control('trend-empty').textContent).toContain('上限')
     expect(ui.control('kpi-tokens').textContent).toBe('23')
     expect(ui.requests).toHaveLength(3)
@@ -318,8 +346,9 @@ describe('dashboard page', () => {
     expect(ui.params(2)).toEqual({ via: 'through', period: 'today', bucket: 'hour' })
     await ui.reply(2, { range, sources: [{ ...local, name: '今日结果' }] })
     await ui.reply(1, { range, sources: [{ ...local, name: '迟到结果' }] })
-    expect(ui.control('summary-rows').children[0].children[0].textContent).toBe('今日结果')
+    expect(ui.sourceCards()[0].children[0].textContent).toBe('今日结果')
     expect(ui.control('results').attributes.get('aria-busy')).toBe('false')
+    expect(ui.control('x-axis').children.map(label => label.textContent)).toEqual(['08', '09'])
     ui.click('view-details')
     expect(ui.params(3)).toEqual({ from: range.from, to: range.to, via: 'through' })
     ui.change('via', 'all')
@@ -351,8 +380,8 @@ describe('dashboard page', () => {
     await ui.reply(0, { range: yesterday, sources: [{ ...local, buckets: [] }] })
     expect(ui.control('read-at').dateTime).toBe(observedAt)
     const originalRange = ui.control('range-label').textContent
-    expect(originalRange).toContain('2026/11/26')
-    expect(ui.control('read-at').textContent).toContain('2026/11/27')
+    expect(originalRange).toBe('网关 · 11月26日 08:00 – 10:00')
+    expect(ui.control('read-at').textContent).toBe('18:00:00')
     const later = '2026-11-27T11:00:00.000Z'
     ui.setClock(later)
     ui.click('refresh')
