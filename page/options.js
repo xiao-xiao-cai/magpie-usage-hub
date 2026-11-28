@@ -248,19 +248,29 @@ const usageHubOptions = (() => {
       report('writing')
       let result = 'preflight_failed'
       try {
-        const latest = await read()
-        const differences = fieldDifferences(saved, latest)
-        if (differences.length) {
-          conflict = { latest, differences }
-          result = 'conflict'
-          return
+        const write = async () => {
+          const latest = await read()
+          const differences = fieldDifferences(saved, latest)
+          if (differences.length) {
+            conflict = { latest, differences }
+            return 'conflict'
+          }
+          const expected = { ...latest, ...patch, configRevision: createId() }
+          pending = expected
+          result = 'readback_failed'
+          try {
+            await bridge.set(expected)
+          } catch {
+            const observed = await read()
+            if (!fieldDifferences(latest, observed).length) {
+              pending = null
+              return 'write_failed'
+            }
+            return acceptRead(observed)
+          }
+          return acceptRead(await read())
         }
-        const expected = { ...latest, ...patch, configRevision: createId() }
-        result = 'write_failed'
-        await bridge.set(expected)
-        pending = expected
-        result = 'readback_failed'
-        result = acceptRead(await read())
+        result = await (bridge.submit ? bridge.submit(write) : write())
       } catch {
       } finally {
         writing = false

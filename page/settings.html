@@ -14,16 +14,15 @@
 <body>
   <main class="workspace config-workspace" aria-label="中心设置">
     <header class="page-toolbar config-toolbar">
-      <nav class="config-nav" aria-label="配置页面"><a id="sources-link" class="quiet" hidden>来源管理</a><span id="settings-title" class="quiet" aria-current="page">中心设置</span><a id="diagnostic-link" class="quiet" hidden>运行诊断</a></nav>
+      <nav class="config-nav" aria-label="配置页面"><a id="sources-link" class="quiet" hidden>来源管理</a><span class="quiet" aria-current="page">中心设置</span><a id="diagnostic-link" class="quiet" hidden>运行诊断</a></nav>
       <a id="return-dashboard" class="quiet" hidden>返回用量看板</a>
     </header>
 
-    <section class="settings-content" aria-labelledby="settings-title">
+    <section class="settings-content" aria-label="中心设置">
       <p id="migration-guide" class="feedback" hidden>请核对设置后开启中心本机采集与用量看板。</p>
       <header class="config-group-head settings-head">
         <h2 id="collection-heading" class="config-group-title">本机采集</h2>
         <div class="settings-meta">
-          <p id="settings-message" class="feedback" role="status">正在读取设置…</p>
           <p id="settings-revision" class="revision" hidden>保存修订 <code id="revision-value"></code></p>
         </div>
       </header>
@@ -36,9 +35,10 @@
         </div>
       </div>
       <form id="settings-form" novalidate>
-        <fieldset id="settings-fields" disabled aria-labelledby="settings-title">
+        <fieldset id="settings-fields" disabled aria-label="中心设置">
           <section class="config-group" aria-labelledby="collection-heading">
             <div class="panel config-card">
+              <p id="settings-message" class="config-card-body feedback" role="status">正在读取设置…</p>
               <div class="config-row">
                 <span id="enabled-label">中心本机采集与用量看板</span>
                 <div class="segmented config-switch" role="radiogroup" aria-labelledby="enabled-label">
@@ -89,8 +89,8 @@
           </section>
         </fieldset>
       </form>
+      <div id="settings-saved" role="status" aria-atomic="true"></div>
     </section>
   </main>
-  <div id="settings-saved" role="status" aria-atomic="true"></div>
 </body>
 </html>

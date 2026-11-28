@@ -29,7 +29,7 @@ export default {
       diagnostics.update({ phase: 'blocked', failure: problem })
       console.warn('[magpie-usage-hub]', JSON.stringify({ status: 'blocked', ...problem }))
     }
-    startDiagnostics(diagnostics)
+    startDiagnostics(diagnostics, undefined, undefined, input.directory)
     return {}
   },
 }

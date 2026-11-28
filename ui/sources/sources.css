@@ -37,7 +37,10 @@
 .notice { margin: 0; font-size: 12px; color: var(--fg-2); }
 #credential-notice:not(:empty) { padding: 8px 14px; }
 .notice:not(:empty) + .notice:not(:empty) { margin-block-start: 4px; }
-#sources-notice:not(:empty) { margin-block-end: 6px; }
+#source-availability { border-block-start: 0; }
+#editor-availability > #source-availability { border: 1px solid var(--line); background: var(--card); border-radius: 12px; margin-block-end: 8px; }
+#source-availability:has(#sources-notice:empty):has(#management-reentry[hidden]) { display: none; }
+#management-reentry { margin: 4px 0 0; }
 
 @container (max-width: 570px) {
   .source-list-row { grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; column-gap: 8px; }

@@ -3,6 +3,7 @@
   let sequence = 0
   let usageDisplayRead = 0
   let receivedTheme = false
+  let receivedVisibility = false
   const origin = new URL(location.href).origin
   const dashboard = location.pathname.endsWith('/dashboard/')
 
@@ -10,11 +11,17 @@
     if (typeof theme?.dark !== 'boolean') return
     const root = document.documentElement
     root.dataset.theme = theme.dark ? 'dark' : 'light'
-    for (const key of ['bg', 'card', 'fg', 'fg-2', 'muted', 'faint', 'line', 'accent', 'accent-soft', 'accent-fg', 'font', 'code']) {
+    for (const key of ['bg', 'card', 'fg', 'fg-2', 'muted', 'faint', 'line', 'accent', 'accent-soft', 'accent-fg', 'font', 'code', 'green']) {
       const value = theme.tokens?.[key]
       if (typeof value === 'string' && value) root.style.setProperty(`--magpie-${key}`, value)
     }
     if (typeof theme.lang === 'string') updateUsageDisplay({ lang: theme.lang })
+  }
+
+  function setVisible(visible) {
+    if (typeof visible !== 'boolean' || visible === host.visible) return
+    host.visible = visible
+    window.dispatchEvent(new Event('usage-host-visibility'))
   }
 
   function updateUsageDisplay(change) {
@@ -69,7 +76,11 @@
       receivedTheme = true
       paint(message.data)
     }
-    if (dashboard && message.event === 'visibility' && message.data?.visible === true) void readUsageDisplay()
+    if (message.event === 'visibility') {
+      receivedVisibility = true
+      setVisible(message.data?.visible)
+      if (dashboard && message.data?.visible === true) void readUsageDisplay()
+    }
     const reply = pending.get(message.id)
     if (reply) { pending.delete(message.id); reply(message) }
   })
@@ -78,14 +89,21 @@
     const raw = new URL(location.href).searchParams.get('back')
     return window.usageHubOptions.dashboardSearch(raw)
   }
-  const host = { backSearch, usageDisplay: { lang: 'zh', chineseUnits: false, rate: 0 } }
-  if (location.pathname.endsWith('/sources/')) {
+  const host = { backSearch, visible: true, usageDisplay: { lang: 'zh', chineseUnits: false, rate: 0 } }
+  if (document.getElementById('configuration-workspace') || location.pathname.endsWith('/sources/')) {
+    let nextWriteAt = 0
     host.getOptions = () => call('options.get')
-    host.setOptions = options => call('options.set', { options })
+    host.setOptions = async options => {
+      const delay = Math.ceil(nextWriteAt - performance.now())
+      if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
+      try { return await call('options.set', { options }) }
+      finally { nextWriteAt = performance.now() + 1000 }
+    }
   }
   window.usageHubHost = host
   void call('hello').then(theme => {
     if (!receivedTheme) paint(theme)
+    if (!receivedVisibility) setVisible(theme?.visible)
     if (dashboard && theme?.visible !== false) void readUsageDisplay()
   }).catch(() => {})
 })()

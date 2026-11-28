@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="usage-admin-token" content="__USAGE_ADMIN_TOKEN__">
+  <title>配置 · Magpie Usage Hub</title>
+  <link rel="stylesheet" href="__SERVICE__shared.css">
+  <link rel="stylesheet" href="__SERVICE__configuration.css">
+  <link rel="stylesheet" href="__SERVICE__sources/sources.css">
+  <link rel="stylesheet" href="__SERVICE__status/status.css">
+  <script defer src="__SERVICE__options.js"></script>
+  <script defer src="__SERVICE__host.js"></script>
+  <script defer src="__SERVICE__configuration-navigation.js"></script>
+  <script defer src="__SERVICE__configuration.js"></script>
+  <script defer src="__SERVICE__sources/onboarding.js"></script>
+  <script defer src="__SERVICE__sources/sources.js"></script>
+  <script defer src="__SERVICE__status/status.js"></script>
+</head>
+<body>
+  <main class="workspace config-workspace" aria-label="配置" id="configuration-workspace" data-service="__SERVICE__" data-view="__VIEW__">
+    <header class="page-toolbar config-toolbar">
+      <nav id="config-nav" class="config-nav" aria-label="配置页面">
+        <a id="sources-link" class="quiet" href="#view=sources" data-config-view="sources">来源管理</a>
+        <a id="settings-link" class="quiet" href="#view=settings" data-config-view="settings">中心设置</a>
+        <a id="status-link" class="quiet" href="#view=status" data-config-view="status">运行诊断</a>
+      </nav>
+      <span id="source-toolbar" hidden><button id="reset-source" class="quiet" type="button" hidden>‹ 返回来源列表</button></span>
+      <a id="back-dashboard" class="quiet" href="__SERVICE__dashboard/">返回用量看板</a>
+    </header>
+    <div id="config-sources" hidden>__SOURCES__</div>
+    <div id="config-settings" hidden>__SETTINGS__</div>
+    <div id="config-status" hidden>__STATUS__</div>
+  </main>
+</body>
+</html>

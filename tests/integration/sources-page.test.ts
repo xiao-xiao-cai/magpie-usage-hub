@@ -18,12 +18,14 @@ class Control extends EventTarget {
   checked = false
   disabled = false
   hidden = false
+  parentElement?: Control
   href = ''
   value = ''
   textContent = ''
   children: Control[] = []
   get valueAsNumber() { return this.value.trim() ? Number(this.value) : NaN }
   append(child: Control) { this.children.push(child) }
+  prepend(child: Control) { this.children.unshift(child); child.parentElement = this }
   replaceChildren(...children: Control[]) { this.children = children }
   setAttribute() {}
   focus() {}
@@ -47,7 +49,7 @@ function harness(sources: object[] = [source], config: Record<string, unknown> =
   const steps: string[] = []
   const location = new URL(`https://magpie.example/plugin/_magpie/service/sources/${hash}`)
   const navigations: string[] = []
-  const browserLocation = Object.assign(location, { replace(relative: string) { navigations.push(new URL(relative, location).href) } })
+  const browserLocation = Object.assign(location, { assign(relative: string) { navigations.push(new URL(relative, location).href) } })
   let saved = { ...config }
   const bridge = {
     async getOptions() { steps.push('get'); return { ...saved } },
@@ -69,11 +71,20 @@ function harness(sources: object[] = [source], config: Record<string, unknown> =
   function replyCreate() {
     replies.push(async () => Response.json({ revision: revisionTwo, sources: [...sources, { ...source, id: lastBody().id }] }, { status: 201 }))
   }
+  let enter: (() => void) | undefined
+  const navigation = {
+    register(_view: string, panel: { enter: () => void }) { enter = panel.enter },
+    isActive: () => true,
+    sourceHash: () => location.hash,
+    setSourceHash(fragment: string) { location.hash = fragment },
+    url: (path: string) => `../${path}`,
+    setRevision() {},
+    async reconnect() { steps.push('wake') },
+    waitForService() {},
+  }
   reply({ revision: revisionOne, sources })
   runInNewContext(script, {
-    window: { usageHubHost: bridge, location: browserLocation, history: { replaceState(_data: unknown, _title: string, relative: string) {
-      location.href = new URL(relative, location).href
-    } } },
+    window: { usageHubHost: bridge, usageHubConfig: navigation, location: browserLocation, confirm: () => true },
     document: { getElementById: control, querySelector: () => ({ content: adminToken }), createElement: () => new Control() },
     async fetch(path: string, init: RequestInit) {
       if (path === '../') { steps.push('wake'); return new Response() }
@@ -86,6 +97,7 @@ function harness(sources: object[] = [source], config: Record<string, unknown> =
     },
     AbortSignal, Event, Intl, URL, URLSearchParams, crypto, setTimeout: (callback: () => void) => setTimeout(callback, 0),
   })
+  enter?.()
   return { control, requests, replies, reply, replyCreate, lastBody, location, navigations, bridge, runtime, writes, steps, get saved() { return saved },
     click(id: string) { control(id).dispatchEvent(new Event('click', { cancelable: true })) },
     input(id: string, value: string | boolean) {
@@ -131,19 +143,16 @@ describe('source management page', () => {
     expect(ui.saved).toMatchObject({ receiverEnabled: true, role: 'center', enabled: true, collectionMode: 'otlp',
       ingestHost: '0.0.0.0', ingestPort: 3494, publicEndpoint: 'https://192.0.2.2/collector', extensionFlag: true })
     expect(ui.saved).not.toHaveProperty('centerGatewayUrl')
-    expect(ui.steps).toEqual(['list', 'get', 'mutate', 'get', 'set', 'get', 'wake', 'status'])
+    expect(ui.steps).toEqual(['list', 'get', 'mutate', 'get', 'set', 'get', 'wake', 'status', 'list'])
     expect(ui.control('windows-settings').hidden).toBe(false)
     expect(ui.control('windows-endpoint').textContent).toBe('https://192.0.2.2/collector')
     expect(ui.location.hash).toContain(id)
     expect(ui.location.hash).not.toContain(digest)
     expect(ui.control('first-receipt').textContent).toBe('等待首次上报。')
-    expect(ui.navigations).toHaveLength(1)
-    const resume = new URL(ui.navigations[0])
-    expect(resume.searchParams.get('to')).toBe('sources')
-    expect(resume.searchParams.get('back')).toBe('?period=30d&via=conversation')
-    expect(new URLSearchParams(resume.hash.slice(1)).get('stage')).toBe('windows')
+    expect(ui.navigations).toHaveLength(0)
+    expect(new URLSearchParams(ui.location.hash.slice(1)).get('stage')).toBe('windows')
 
-    const reopened = harness([{ ...source, id }], ui.saved, resume.hash)
+    const reopened = harness([{ ...source, id }], ui.saved, ui.location.hash)
     await Bun.sleep(0)
     expect(reopened.control('windows-settings').hidden).toBe(false)
     expect(reopened.writes).toHaveLength(0)
@@ -158,13 +167,10 @@ describe('source management page', () => {
     expect(reopened.control('received-at').textContent).not.toBe('')
   })
 
-  test('keeps dashboard filters on all configuration links and opens the wizard on demand', async () => {
+  test('opens the wizard within the sources panel on demand', async () => {
     const ui = harness([])
     await Bun.sleep(0)
     expect(ui.control('editor').hidden).toBe(true)
-    expect(ui.control('back-dashboard').href).toBe('../dashboard/?period=30d&via=conversation')
-    expect(ui.control('settings-link').href).toBe('../../../settings.html?back=%3Fperiod%3D30d%26via%3Dconversation')
-    expect(ui.control('status-link').href).toBe('../status/?back=%3Fperiod%3D30d%26via%3Dconversation')
     ui.click('add-source')
     await Bun.sleep(0)
     expect(ui.location.hash).toBe('#add')
@@ -209,10 +215,11 @@ describe('source management page', () => {
     expect(reloaded.control('source-id').textContent).toBe(id)
     expect(reloaded.control('create-credential').hidden).toBe(true)
     expect(reloaded.control('receiver-endpoint').value).toBe(endpoint)
+    reloaded.reply({ revision: revisionOne, sources: [{ ...source, id }] })
     reloaded.click('save-source')
     await Bun.sleep(0)
     expect(reloaded.control('windows-settings').hidden).toBe(false)
-    expect(reloaded.requests).toHaveLength(1)
+    expect(reloaded.requests.map(request => request.init.method)).toEqual(['GET', 'GET'])
     expect(reloaded.writes).toHaveLength(1)
   })
 
@@ -241,9 +248,10 @@ describe('source management page', () => {
     await Bun.sleep(0)
     expect(reloaded.control('source-id').textContent).toBe(id)
     expect(reloaded.control('receiver-endpoint').value).toBe(endpoint)
+    reloaded.reply({ revision: revisionOne, sources: [source, { ...source, id }] })
     reloaded.click('save-source')
     await Bun.sleep(0)
-    expect(reloaded.requests.map(request => request.init.method)).toEqual(['GET'])
+    expect(reloaded.requests.map(request => request.init.method)).toEqual(['GET', 'GET'])
     expect(reloaded.control('windows-settings').hidden).toBe(false)
   })
 
@@ -280,7 +288,8 @@ describe('source management page', () => {
     ui.click('save-source')
     await Bun.sleep(0)
     expect(ui.control('management-reentry').hidden).toBe(false)
-    const target = new URL(ui.control('resume-management').href, ui.location.href)
+    ui.click('resume-management')
+    const target = new URL(ui.navigations[0])
     expect(target.pathname).toBe('/plugin/_magpie/service/')
     expect(target.searchParams.get('to')).toBe('sources')
     expect(target.searchParams.get('back')).toBe('?period=30d&via=conversation')
@@ -355,7 +364,7 @@ describe('source management page', () => {
     await Bun.sleep(0)
     expect(ui.control('windows-settings').hidden).toBe(false)
     expect(ui.writes).toHaveLength(1)
-    expect(ui.requests).toHaveLength(2)
+    expect(ui.requests.map(request => request.init.method)).toEqual(['GET', 'POST', 'GET'])
   })
 
   test('retains the endpoint draft when the Options readback differs from the write', async () => {
@@ -376,7 +385,7 @@ describe('source management page', () => {
     ui.click('save-source')
     await Bun.sleep(0)
     expect(ui.control('windows-settings').hidden).toBe(false)
-    expect(ui.requests).toHaveLength(2)
+    expect(ui.requests.map(request => request.init.method)).toEqual(['GET', 'POST', 'GET'])
   })
 
   test('reuses an existing receiver from the source editor and waits for the matching runtime revision', async () => {
@@ -400,7 +409,7 @@ describe('source management page', () => {
     await Bun.sleep(0)
     expect(ui.control('windows-settings').hidden).toBe(false)
     expect(ui.writes).toHaveLength(0)
-    expect(ui.requests).toHaveLength(1)
+    expect(ui.requests.map(request => request.init.method)).toEqual(['GET', 'GET'])
   })
 
   test('registers a second device while reusing the adopted listener', async () => {

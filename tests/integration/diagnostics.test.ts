@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createDiagnostics, serveDiagnostics } from '../../src/diagnostics.ts'
 import { requestDirect } from '../../src/gateway/direct.ts'
+import { readManagementToken } from '../../src/state/management.ts'
 
 const revision = 'b02166b2-07f4-4208-aa01-8dfb9acf244e'
 
@@ -165,5 +166,53 @@ test('source management requires its management page token', async () => {
     expect(invoked).toEqual(['/api/sources'])
   } finally {
     await server.stop(true)
+  }
+})
+
+test('configuration legacy routes serve one composed document and all shared assets', async () => {
+  const server = serveDiagnostics(createDiagnostics(revision), 0)
+  try {
+    const routes = ['sources/', 'status/', '?to=sources', '?to=settings', '?to=status']
+    const documents = await Promise.all(routes.map(path => fetch(new URL(path, server.url))))
+    const bodies = await Promise.all(documents.map(response => response.text()))
+    for (const response of documents) {
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toContain('text/html')
+      expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'self'")
+    }
+    expect(bodies.every(body => body.includes('id="configuration-workspace"'))).toBe(true)
+    expect(bodies.every(body => body.includes('data-config-view="sources"') && body.includes('data-config-view="settings"')
+      && body.includes('data-config-view="status"'))).toBe(true)
+    expect(bodies[0]).toContain('data-view="sources"')
+    expect(bodies[1]).toContain('data-view="status"')
+    expect(bodies[3]).toContain('data-view="settings"')
+    for (const path of ['configuration-navigation.js', 'configuration.js', 'configuration.css', 'sources/sources.js',
+      'sources/sources.css', 'status/status.js', 'status/status.css']) {
+      expect((await fetch(new URL(path, server.url))).status).toBe(200)
+    }
+  } finally {
+    await server.stop(true)
+  }
+})
+
+test('management key survives Bun replacement under the same Magpie host and changes with its owner', async () => {
+  const hostDirectory = await mkdtemp(join(tmpdir(), 'usage-hub-management-'))
+  try {
+    const [first, concurrent] = await Promise.all([
+      readManagementToken(hostDirectory, 41001), readManagementToken(hostDirectory, 41001),
+    ])
+    const afterWorkerRestart = await readManagementToken(hostDirectory, 41001)
+    const otherHost = await readManagementToken(hostDirectory, 41002)
+    expect(first).toMatch(/^[a-f0-9]{64}$/u)
+    expect(concurrent).toBe(first)
+    expect(afterWorkerRestart).toBe(first)
+    expect(otherHost).not.toBe(first)
+  } finally {
+    const pluginDirectory = join(hostDirectory, 'magpie-usage-hub')
+    const keyDirectory = join(pluginDirectory, 'management')
+    await unlink(join(keyDirectory, 'key'))
+    await rmdir(keyDirectory)
+    await rmdir(pluginDirectory)
+    await rmdir(hostDirectory)
   }
 })

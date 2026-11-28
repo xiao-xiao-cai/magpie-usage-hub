@@ -1,4 +1,5 @@
 const byId = id => document.getElementById(id)
+const config = window.usageHubConfig
 const adminToken = document.querySelector('meta[name="usage-admin-token"]')?.content
 const form = byId('source-form')
 const formTitle = byId('source-form-title')
@@ -36,20 +37,20 @@ let managementExpired = false
 let confirmation
 let discardPending = false
 let returnId = ''
+let sourceRoute
+let refreshQueued = false
+let readFailed = false
 const sourceButtons = new Map()
-const receiver = createReceiverWizard(byId, controls, () => window.location.replace(managementAddress()))
+const receiver = createReceiverWizard(byId, controls, renewManagement, config, setSourceFragment)
 const back = window.usageHubHost.backSearch()
-const navigation = back ? `?back=${encodeURIComponent(back)}` : ''
-const reentry = new URLSearchParams({ to: 'sources' })
-if (back) reentry.set('back', back)
-byId('back-dashboard').href = `../dashboard/${back}`
-byId('settings-link').href = `../../../settings.html${navigation}`
-byId('status-link').href = `../status/${navigation}`
-byId('local-source-hint').href = byId('settings-link').href
 
 function setSourceAddress(id = '') {
-  const { pathname, search } = window.location
-  window.history.replaceState(null, '', `${pathname}${search}${id ? `#source=${id}` : ''}`)
+  setSourceFragment(id ? `#source=${id}` : '')
+}
+
+function setSourceFragment(fragment) {
+  config.setSourceHash(fragment)
+  sourceRoute = config.sourceHash()
 }
 
 function draft() {
@@ -92,7 +93,7 @@ async function callSource(body) {
   if (!/^[0-9a-f]{64}$/.test(adminToken ?? '')) throw new Error()
   const headers = { 'X-Magpie-Usage-Admin': adminToken }
   if (body) headers['Content-Type'] = 'application/json'
-  const response = await fetch('../api/sources', {
+  const response = await fetch(config.url('api/sources'), {
     headers, method: body ? 'POST' : 'GET', body: body ? JSON.stringify(body) : undefined,
     cache: 'no-store', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(10_000),
   })
@@ -134,15 +135,16 @@ function controls() {
 
   byId('editor').hidden = !inEditor
   byId('sources-section').hidden = inEditor
-  byId('back-dashboard').hidden = inEditor
-  byId('config-nav').hidden = inEditor
+  const availability = byId('source-availability')
+  const availabilityParent = byId(inEditor ? 'editor-availability' : 'sources-card')
+  if (availability.parentElement !== availabilityParent) availabilityParent.prepend(availability)
   byId('leave-confirmation').hidden = !discardPending
   byId('add-source').disabled = waiting || !snapshot
   byId('refresh-sources').disabled = waiting
   byId('refresh-editor').disabled = waiting || discardPending
   byId('refresh-receipt').disabled = waiting
   byId('management-reentry').hidden = !managementExpired
-  if (managementExpired) byId('resume-management').href = managementAddress()
+  byId('resume-management').disabled = waiting
   byId('sources-section').setAttribute('aria-busy', String(waiting))
   form.hidden = !editable || receiver.completed
   form.setAttribute('aria-busy', String(waiting))
@@ -162,7 +164,7 @@ function controls() {
     const search = new URLSearchParams(back)
     search.set('sourceId', latest.id)
     search.set('view', 'overview')
-    byId('historical-source-hint').href = `../dashboard/${usageHubOptions.dashboardSearch(`?${search}`)}`
+    byId('historical-source-hint').href = config.url(`dashboard/${usageHubOptions.dashboardSearch(`?${search}`)}`)
   }
   byId('source-overview').hidden = !latest || wizard
   formTitle.hidden = wizard && !editing
@@ -206,6 +208,10 @@ function controls() {
   const feedbackCard = !form.hidden ? form : receiver.completed
     ? byId(byId('receipt-settings').hidden ? 'windows-settings' : 'receipt-settings') : byId('source-overview')
   if (feedback.parentElement !== feedbackCard) feedbackCard.append(feedback)
+  if (refreshQueued && !waiting && config.isActive('sources')) {
+    refreshQueued = false
+    void refresh()
+  }
 }
 
 function showEditor(source = newSource) {
@@ -296,19 +302,27 @@ function sourceFacts(source) {
 }
 
 function present(next) {
+  const focusedSource = [...sourceButtons].find(([, button]) => button === document.activeElement)?.[0]
   snapshot = next
   sourceButtons.clear()
   byId('sources-rows').replaceChildren(...next.sources.map(rowFor))
   byId('sources-rows').hidden = !next.sources.length
   byId('sources-empty').hidden = next.sources.length > 0
   byId('source-facts').replaceChildren(...sourceFacts(selected()))
+  if (focusedSource && config.isActive('sources')) sourceButtons.get(focusedSource)?.focus()
 }
 
 async function loadSources() {
   const next = await callSource()
-  const first = !snapshot
+  const hash = config.sourceHash()
+  const differentRoute = sourceRoute !== hash
+  const keepEditor = snapshot && (needsReview || Object.keys(draft()).length || receiver.dirty)
+  const first = !snapshot || differentRoute && !keepEditor && !receiver.busy
+  if (first && receiver.active) receiver.close(false)
   const restored = receiver.resume()
-  const preserve = needsReview || Boolean(snapshot && Object.keys(draft()).length)
+  const preserve = keepEditor || Boolean(snapshot && !first && receiver.active)
+  if (differentRoute && !first && keepEditor) config.setSourceHash(sourceRoute)
+  sourceRoute = config.sourceHash()
   stale = false
   managementExpired = false
   present(next)
@@ -344,14 +358,14 @@ async function loadSources() {
         showEditor(source || newSource)
         if (awaiting) notice.textContent = '最新列表中未查到此次登记。请重新填写名称和摘要，再手动提交。'
         controls()
-        byId('source-title').focus()
+        focusSourceTitle()
       } else {
         showEditor()
         byId('sources-notice').textContent = '已登记的来源不存在。请核对来源列表。'
         return
       }
-    } else if (first && usageHubOptions.sourceFragment(window.location.hash).startsWith('#source=')) {
-      returnId = new URLSearchParams(window.location.hash.slice(1)).get('source')
+    } else if (first && hash.startsWith('#source=')) {
+      returnId = new URLSearchParams(hash.slice(1)).get('source')
       const source = next.sources.find(item => item.id === returnId)
       showEditor(source)
       if (!source) {
@@ -360,20 +374,22 @@ async function loadSources() {
         return
       }
       controls()
-      byId('source-title').focus()
-    } else showEditor(selected())
+      focusSourceTitle()
+    } else showEditor(first ? undefined : selected())
   }
   byId('sources-notice').textContent = ''
 }
 
-function managementAddress() {
-  return `../?${reentry}${usageHubOptions.sourceFragment(window.location.hash)}`
+function focusSourceTitle() {
+  if (config.isActive('sources') && !document.activeElement?.closest?.('#config-nav')) byId('source-title').focus()
 }
 
 function expireManagement() {
   stale = true
   managementExpired = true
-  byId('sources-notice').textContent = '管理会话已失效。请重新打开来源管理。'
+  const hasDraft = Object.keys(draft()).length || receiver.dirty
+  byId('sources-notice').textContent = hasDraft ? '管理会话已失效。请先备份草稿；重新打开后需重新填写。' : '管理会话已失效。请重新打开来源管理。'
+  byId('resume-management').textContent = hasDraft ? '放弃当前草稿并重新打开' : '重新打开来源管理'
 }
 
 async function reconcileSources() {
@@ -382,16 +398,28 @@ async function reconcileSources() {
   }
 }
 
+async function renewManagement(revision) {
+  config.setRevision(revision)
+  await refresh()
+}
+
 async function refresh() {
-  if (busy || receiver.busy) return
+  if (busy || receiver.busy) { refreshQueued = true; return }
+  refreshQueued = false
   confirmation = undefined
   busy = true
   controls()
-  byId('sources-notice').textContent = '正在读取来源…'
+  if (!snapshot) byId('sources-notice').textContent = '正在读取来源…'
   try {
+    if (readFailed) void config.reconnect()
+    await config.waitForService()
     await loadSources()
+    readFailed = false
   } catch (error) {
+    stale = true
+    readFailed = ![403, 404].includes(error?.cause?.status)
     if (error?.cause?.status === 403) expireManagement()
+    else if (error?.cause?.status === 404) byId('sources-notice').textContent = '来源管理暂不可用。请在中心设置核对采集状态。'
     else byId('sources-notice').textContent = snapshot ? '刷新失败。当前显示上次读取的来源，可重试。' : '暂时无法读取来源。请刷新重试。'
   } finally {
     busy = false
@@ -418,7 +446,7 @@ async function mutate(body, receiverPatch) {
     if (body.action !== 'create' && body.action !== 'update') restore(settings)
     if (rotation && body.action !== 'rotate') restore({ rotation })
     notice.textContent = successText[body.action]
-    byId('source-title').focus()
+    focusSourceTitle()
     if (receiverPatch) await receiver.finish(source.id, receiverPatch)
   } catch (error) {
     const { status, code } = error?.cause ?? {}
@@ -431,7 +459,7 @@ async function mutate(body, receiverPatch) {
         : '来源配置已变化。请核对最新修订，草稿已保留。'
     } else if (status === 403) {
       expireManagement()
-      notice.textContent = '请使用页面顶部的链接重新打开来源管理。'
+      notice.textContent = '请重新连接来源管理并核对草稿。'
     } else if (failures.has(code)) {
       notice.textContent = failures.get(code)
     } else {
@@ -484,6 +512,13 @@ function bindSubmit(target, button, submit) {
 byId('refresh-sources').addEventListener('click', refresh)
 byId('refresh-editor').addEventListener('click', refresh)
 byId('refresh-receipt').addEventListener('click', refresh)
+byId('resume-management').addEventListener('click', () => {
+  const target = new URL(config.url(''), window.location.href)
+  target.searchParams.set('to', 'sources')
+  if (back) target.searchParams.set('back', back)
+  target.hash = config.sourceHash()
+  window.location.assign(target.href)
+})
 bindSubmit(form, byId('save-source'), () => {
   const name = fields.name.value.trim()
   if (!name || [...name].length > 80 || /[\p{Cc}\p{Cf}]/u.test(name)) {
@@ -586,4 +621,4 @@ byId('review-latest').addEventListener('click', () => {
   if (source && (receiver.active || source.transport !== 'otlp')) byId('source-title').focus()
   else fields.name.focus()
 })
-void refresh()
+config.register('sources', { enter: refresh })

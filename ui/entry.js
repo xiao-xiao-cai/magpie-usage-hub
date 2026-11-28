@@ -1,18 +1,7 @@
 (() => {
-  const url = new URL(location.href)
   const back = window.usageHubHost.backSearch()
-  const destination = url.searchParams.get('to') ?? 'dashboard'
   const isCenter = document.querySelector('meta[name="center-available"]').content === 'yes'
-  if (destination === 'status' || (destination === 'sources' && isCenter)) {
-    const target = new URL(`${destination}/`, url)
-    if (back) target.searchParams.set('back', back)
-    if (destination === 'status') {
-      const revision = window.usageHubOptions.revision(new URLSearchParams(url.hash.slice(1)).get('revision'))
-      if (revision) target.hash = new URLSearchParams({ revision }).toString()
-    }
-    if (destination === 'sources') target.hash = window.usageHubOptions.sourceFragment(url.hash)
-    location.replace(target.href)
-  } else if (isCenter) {
+  if (isCenter) {
     location.replace(`dashboard/${back}`)
   } else {
     const notice = document.getElementById('entry-message')

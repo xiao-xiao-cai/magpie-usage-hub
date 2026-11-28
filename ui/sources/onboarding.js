@@ -1,4 +1,4 @@
-function createReceiverWizard(element, update, renewManagement) {
+function createReceiverWizard(element, update, renewManagement, config, fragment) {
   const options = usageHubOptions
   const host = window.usageHubHost
   const notice = element('receiver-notice')
@@ -11,14 +11,9 @@ function createReceiverWizard(element, update, renewManagement) {
   let checkingReceipt = false
 
   function resume() {
-    const params = new URLSearchParams(options.receiverFragment(window.location.hash).slice(1))
+    const params = new URLSearchParams(options.receiverFragment(config.sourceHash()).slice(1))
     const id = options.revision(params.get('add'))
     return { open: params.has('add'), id, params }
-  }
-
-  function fragment(value) {
-    try { window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${value}`) }
-    catch { try { window.location.replace(value || '#') } catch {} }
   }
 
   function remember(id) {
@@ -69,7 +64,7 @@ function createReceiverWizard(element, update, renewManagement) {
       readback_mismatch: '接收设置的读回值与提交值不同。', conflict: '其他会话已更新中心设置。',
       rebased: '已载入最新中心设置。请核对接收地址和端口后继续。',
     }
-    const current = options.createSession({ get: () => host.getOptions(), set: value => host.setOptions(value) }, next => {
+    const current = options.createSession({ get: () => host.getOptions(), set: value => host.setOptions(value), submit: config.submitOptions }, next => {
       if (session !== current) return
       state = next
       if (next.saved) applyDefaults(next.saved)
@@ -111,8 +106,8 @@ function createReceiverWizard(element, update, renewManagement) {
     })
   }
 
-  function close() {
-    if (active) fragment('')
+  function close(clearAddress = true) {
+    if (active && clearAddress) fragment('')
     active = false
     completed = false
     sourceId = ''
@@ -145,11 +140,11 @@ function createReceiverWizard(element, update, renewManagement) {
 
   async function verify(revision) {
     const request = { cache: 'no-store', credentials: 'omit', redirect: 'error' }
-    await fetch('../', { ...request, signal: AbortSignal.timeout(4000) }).catch(() => {})
+    await config.reconnect(revision)
     for (let attempt = 0; attempt < 8; attempt++) {
       if (attempt) await new Promise(resolve => setTimeout(resolve, 650))
       try {
-        const response = await fetch('../api/status', { ...request, signal: AbortSignal.timeout(3000) })
+        const response = await fetch(config.url('api/status'), { ...request, signal: AbortSignal.timeout(3000) })
         if (!response.ok) continue
         const status = await response.json()
         if (status?.schema !== 'magpie-usage-hub/status-v1' || status.role !== 'center' || status.loadedRevision !== revision) continue
@@ -172,7 +167,7 @@ function createReceiverWizard(element, update, renewManagement) {
       element('windows-endpoint').textContent = endpoint
       notice.textContent = ''
       update()
-      element(checkingReceipt ? 'receipt-title' : 'windows-title').focus()
+      if (config.isActive('sources') && !document.activeElement?.closest?.('#config-nav')) element(checkingReceipt ? 'receipt-title' : 'windows-title').focus()
     } else {
       notice.textContent = retryBind ? '来源已登记，中心监听失败。请检查监听 IP 或端口占用，修改后重试。'
         : '来源已登记，尚未确认中心已采用本次设置并开始监听。可重试或查看运行诊断。'
@@ -194,7 +189,7 @@ function createReceiverWizard(element, update, renewManagement) {
       else await session.submit(patch)
       if (!['confirmed', 'loaded'].includes(state.result)) return
       await confirmListening(state.saved.configRevision, patch.publicEndpoint)
-      if (completed) renewManagement()
+      if (completed) void renewManagement(state.saved.configRevision)
     } finally {
       working = false
       update()
@@ -295,7 +290,7 @@ function createReceiverWizard(element, update, renewManagement) {
   return { open, close, resume, validate, finish, render, beginRegistration, registered,
     get active() { return active }, get completed() { return completed },
     get dirty() { return active && !completed && (draftFields.size > 0 || registering) },
-    get busy() { return working || state?.writing || state?.refreshing },
+    get busy() { return working || Boolean(state?.writing || state?.refreshing) },
     get blocked() { return Boolean(!state?.saved || state.pending || state.differences || restoredConflict || this.busy) },
   }
 }

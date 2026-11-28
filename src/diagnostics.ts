@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { join } from 'node:path'
 import { isRecord } from './center/http.ts'
+import { readManagementToken } from './state/management.ts'
 import type { SyncPhase } from './sync/protocol.ts'
 
 export const diagnosticPort = 3493
@@ -68,18 +69,18 @@ const assets = new Map([
   ['/options.js', ['../page/options.js', 'text/javascript; charset=utf-8']],
   ['/shared.css', ['../page/shared.css', 'text/css; charset=utf-8']],
   ['/host.js', ['host.js', 'text/javascript; charset=utf-8']],
-  ['/status/', ['index.html', 'text/html; charset=utf-8']],
+  ['/configuration-navigation.js', ['configuration-navigation.js', 'text/javascript; charset=utf-8']],
+  ['/configuration.js', ['../page/configuration.js', 'text/javascript; charset=utf-8']],
+  ['/configuration.css', ['../page/configuration.css', 'text/css; charset=utf-8']],
   ['/status/status.js', ['status.js', 'text/javascript; charset=utf-8']],
   ['/status/status.css', ['status.css', 'text/css; charset=utf-8']],
+  ['/sources/onboarding.js', ['sources/onboarding.js', 'text/javascript; charset=utf-8']],
+  ['/sources/sources.js', ['sources/sources.js', 'text/javascript; charset=utf-8']],
+  ['/sources/sources.css', ['sources/sources.css', 'text/css; charset=utf-8']],
 ])
 const dashboardAssets = new Map([
   ['/dashboard/dashboard.js', ['dashboard/dashboard.js', 'text/javascript; charset=utf-8']],
   ['/dashboard/dashboard.css', ['dashboard/dashboard.css', 'text/css; charset=utf-8']],
-])
-const managementAssets = new Map([
-  ['/sources/onboarding.js', ['sources/onboarding.js', 'text/javascript; charset=utf-8']],
-  ['/sources/sources.js', ['sources/sources.js', 'text/javascript; charset=utf-8']],
-  ['/sources/sources.css', ['sources/sources.css', 'text/css; charset=utf-8']],
 ])
 const displayPath = '/api/usage-display'
 const queryPaths = new Set(['/api/usage', '/api/usage/rows', displayPath])
@@ -111,10 +112,25 @@ async function readChineseUnits(hostDirectory: string | undefined): Promise<bool
   }
 }
 
+async function configurationPage(view: string, prefix: string, token: string): Promise<string> {
+  const read = (path: string) => Bun.file(new URL(path, import.meta.url)).text()
+  const [template, settings, sources, status] = await Promise.all([
+    read('../ui/configuration.html'), read('../page/settings.html'), read('../ui/sources/index.html'), read('../ui/index.html'),
+  ])
+  const start = settings.indexOf('<section class="settings-content"')
+  const end = settings.indexOf('</main>', start)
+  if (start < 0 || end < 0) throw new Error('settings_markup_unavailable')
+  const parts: Record<string, string> = {
+    SERVICE: prefix, VIEW: view, USAGE_ADMIN_TOKEN: token,
+    SETTINGS: settings.slice(start, end), SOURCES: sources, STATUS: status,
+  }
+  return template.replace(/__(SERVICE|VIEW|USAGE_ADMIN_TOKEN|SETTINGS|SOURCES|STATUS)__/gu, (_, key: string) => parts[key]!)
+}
+
 export function serveDiagnostics(
   diagnostics: Diagnostics, port = diagnosticPort, dashboard?: DashboardQuery, manage?: ManageSources, hostDirectory?: string,
+  adminToken = randomBytes(32).toString('hex'),
 ) {
-  const adminToken = manage ? randomBytes(32).toString('hex') : ''
   const queryToken = dashboard ? randomBytes(32).toString('hex') : ''
   return Bun.serve({
     hostname: '127.0.0.1',
@@ -160,20 +176,26 @@ export function serveDiagnostics(
         return new Response(null, { status: 405, headers })
       }
 
+      const view = path === '/sources/' ? 'sources' : path === '/status/' ? 'status' : path === '/' ? url.searchParams.get('to') : null
+      if (view === 'sources' || view === 'settings' || view === 'status') {
+        headers.delete('Access-Control-Allow-Origin')
+        headers.set('Content-Type', 'text/html; charset=utf-8')
+        headers.set('Content-Security-Policy', `${headers.get('Content-Security-Policy')}; frame-ancestors 'self'`)
+        return new Response(await configurationPage(view, path === '/' ? './' : '../', adminToken), { headers })
+      }
+
       if (path === '/') {
         headers.set('Content-Type', 'text/html; charset=utf-8')
         const template = await Bun.file(new URL('../ui/entry.html', import.meta.url)).text()
         return new Response(template.replace('__CENTER_AVAILABLE__', dashboard ? 'yes' : 'no'), { headers })
       }
 
-      if ((manage && path === '/sources/') || (dashboard && path === '/dashboard/')) {
+      if (dashboard && path === '/dashboard/') {
         headers.delete('Access-Control-Allow-Origin')
         headers.set('Content-Type', 'text/html; charset=utf-8')
         headers.set('Content-Security-Policy', `${headers.get('Content-Security-Policy')}; frame-ancestors 'self'`)
-        const isDashboard = path === '/dashboard/'
-        const template = await Bun.file(new URL(`../ui${path}index.html`, import.meta.url)).text()
-        return new Response(isDashboard ? template.replace('__USAGE_QUERY_TOKEN__', queryToken)
-          : template.replace('__USAGE_ADMIN_TOKEN__', adminToken), { headers })
+        const template = await Bun.file(new URL('../ui/dashboard/index.html', import.meta.url)).text()
+        return new Response(template.replace('__USAGE_QUERY_TOKEN__', queryToken), { headers })
       }
       if (path === '/api/status') return Response.json(diagnostics.getStatus(), { headers })
       if (dashboard && queryPaths.has(path)) {
@@ -190,7 +212,6 @@ export function serveDiagnostics(
         }
       }
       const asset = assets.get(path) ?? (dashboard ? dashboardAssets.get(path) : undefined)
-        ?? (manage ? managementAssets.get(path) : undefined)
       if (asset === undefined) return new Response(null, { status: 404, headers })
       const [file, mimeType] = asset
       headers.set('Content-Type', mimeType)
@@ -202,10 +223,14 @@ export function serveDiagnostics(
 export function startDiagnostics(
   diagnostics: Diagnostics, dashboard?: DashboardQuery, manage?: ManageSources, hostDirectory?: string,
 ): void {
+  const token = hostDirectory ? readManagementToken(hostDirectory).catch(() => {
+    console.warn('[magpie-usage-hub]', '{"status":"management_session_not_persistent"}')
+    return undefined
+  }) : Promise.resolve(undefined)
   let reported = false
-  function listen() {
+  async function listen() {
     try {
-      serveDiagnostics(diagnostics, diagnosticPort, dashboard, manage, hostDirectory).unref()
+      serveDiagnostics(diagnostics, diagnosticPort, dashboard, manage, hostDirectory, await token).unref()
       if (reported) console.info('[magpie-usage-hub]', '{"status":"diagnostic_ready"}')
     } catch (error) {
       if (!reported) {
@@ -217,5 +242,5 @@ export function startDiagnostics(
       setTimeout(listen, 1_000).unref()
     }
   }
-  listen()
+  void listen()
 }

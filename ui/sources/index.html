@@ -1,40 +1,20 @@
-<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <meta name="usage-admin-token" content="__USAGE_ADMIN_TOKEN__">
-  <title>来源管理 · Magpie Usage Hub</title>
-  <link rel="stylesheet" href="../shared.css">
-  <link rel="stylesheet" href="sources.css">
-  <script defer src="../options.js"></script>
-  <script defer src="../host.js"></script>
-  <script defer src="onboarding.js"></script>
-  <script defer src="sources.js"></script>
-</head>
-<body>
-  <main class="workspace config-workspace" aria-label="来源管理">
-    <header class="page-toolbar config-toolbar">
-      <nav id="config-nav" class="config-nav" aria-label="配置页面"><span class="quiet" aria-current="page">来源管理</span><a id="settings-link" class="quiet" href="../../../settings.html">中心设置</a><a id="status-link" class="quiet" href="../status/">运行诊断</a></nav>
-      <button id="reset-source" class="quiet" type="button" hidden>‹ 返回来源列表</button>
-      <a id="back-dashboard" class="quiet" href="../dashboard/">返回用量看板</a>
-    </header>
-
-    <p id="sources-notice" class="notice" role="status">正在读取来源…</p>
-    <p id="management-reentry" hidden><a id="resume-management" href="../?to=sources">重新打开来源管理</a></p>
     <section id="sources-section" class="config-group" aria-labelledby="sources-heading">
       <header class="config-group-head">
         <h2 id="sources-heading" class="config-group-title">用量来源</h2>
         <div class="config-actions"><button id="refresh-sources" type="button">刷新</button><button id="add-source" class="primary" type="button">添加设备</button></div>
       </header>
-      <div class="panel list-panel config-card">
+      <div id="sources-card" class="panel list-panel config-card">
+        <div id="source-availability" class="config-card-body">
+          <p id="sources-notice" class="notice" role="status">正在读取来源…</p>
+          <p id="management-reentry" hidden><button id="resume-management" class="quiet" type="button">重新连接来源管理</button></p>
+        </div>
         <p id="sources-empty" class="muted" hidden>尚无已登记的来源。</p>
         <ul id="sources-rows" class="source-list" role="list" aria-labelledby="sources-heading" hidden></ul>
       </div>
     </section>
 
     <section id="editor" aria-labelledby="source-title" hidden>
+      <div id="editor-availability"></div>
       <header class="config-group-head">
         <h2 id="source-title" class="config-group-title" tabindex="-1">添加设备</h2>
         <button id="refresh-editor" type="button">刷新</button>
@@ -51,7 +31,7 @@
         <dl id="source-facts" class="config-rows"></dl>
         <div id="source-identity" class="config-card-body muted" hidden>来源 ID <code id="source-id"></code></div>
         <div class="config-card-body config-actions" id="source-overview-actions" hidden>
-          <a id="local-source-hint" class="quiet" href="../../../settings.html" hidden>打开中心设置</a>
+          <a id="local-source-hint" class="quiet" href="#view=settings" data-config-view="settings" hidden>打开中心设置</a>
           <a id="historical-source-hint" class="quiet" href="../dashboard/" hidden>查看此来源的用量</a>
           <div id="recovery-tools" hidden><button id="rebuild-source" type="button">确认同源重建</button></div>
         </div>
@@ -159,6 +139,3 @@ try { [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes(
         </div>
       </div>
     </section>
-  </main>
-</body>
-</html>

@@ -62,6 +62,7 @@ async function settingsPage() {
   const writes: Options[] = []
   const writeTimes: number[] = []
   let beforeWrite: (() => Promise<unknown>) | undefined
+  let afterWrite: (() => Promise<unknown>) | undefined
   let beforeRead: (() => Promise<unknown>) | undefined
   const navigations: string[] = []
   const service = 'https://usage.example.com/plugins/fixture/_magpie/service/'
@@ -76,7 +77,7 @@ async function settingsPage() {
       location: { href: `https://usage.example.com/plugins/fixture/settings.html?${back}`, assign: (url: string) => navigations.push(url) },
       magpie: { service, options: {
         async get() { await beforeRead?.(); return { ...stored } },
-        async set(next: Options) { writes.push(next); writeTimes.push(clock); await beforeWrite?.(); stored = next },
+        async set(next: Options) { writes.push(next); writeTimes.push(clock); await beforeWrite?.(); stored = next; await afterWrite?.() },
       } },
     },
     Event, URL, performance: { now: () => clock },
@@ -94,6 +95,7 @@ async function settingsPage() {
     get stored() { return stored },
     update(next: Options) { stored = { ...stored, ...next } },
     onWrite(handler?: () => Promise<unknown>) { beforeWrite = handler },
+    afterWrite(handler: () => Promise<unknown>) { afterWrite = handler },
     onRead(handler?: () => Promise<unknown>) { beforeRead = handler },
     expireToast() { for (const callback of timers.values()) callback(); timers.clear() },
     edit(id: string, value: string, commit = true) {
@@ -351,6 +353,16 @@ describe('plugin Options page', () => {
     await ui.refresh()
     expect(ui.last).toMatchObject({ result: 'confirmed', saved: { requestTimeoutSec: 20 }, pending: false })
     expect(ui.writes).toHaveLength(1)
+  })
+
+  test('reads back a write whose acknowledgement was lost without repeating it', async () => {
+    const ui = await settingsPage()
+    ui.afterWrite(async () => { throw new Error('fixture lost acknowledgement') })
+    ui.edit('requestTimeoutSec', '31')
+    await Bun.sleep(0)
+    expect(ui.writes).toHaveLength(1)
+    expect(ui.stored.requestTimeoutSec).toBe(31)
+    expect(ui.control('settings-saved').textContent).toBe('已保存')
   })
 
   test('keeps a newer Options read busy after an earlier response completes', async () => {

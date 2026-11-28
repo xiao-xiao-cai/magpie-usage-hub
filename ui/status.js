@@ -1,6 +1,7 @@
+(() => {
 const byId = id => document.getElementById(id)
-const navigation = new URLSearchParams(location.hash.slice(1))
-const savedRevision = usageHubOptions.revision(navigation.get('revision'))
+const config = window.usageHubConfig
+const host = window.usageHubHost
 const phases = new Map([
   ['starting', '正在启动'], ['disabled', '已停用'], ['migration_required', '需要迁移配置'],
   ['waiting_lock', '等待上一宿主交接'], ['retrying', '等待重试'], ['blocked', '已阻塞'], ['ready', '后台已就绪'],
@@ -27,13 +28,15 @@ const failureText = new Map([
   ['incompatible_response', '中心本机网关响应无法识别。请核对版本和配置。'],
 ])
 const dateTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'medium' })
-let latest = 0
-let pending = false
+let savedRevision = ''
+let lastStatus
+let request
+let poll
+let readFailed = false
 
 function showStatus(status) {
   const matches = !savedRevision || status.loadedRevision === savedRevision
   const applied = !savedRevision || status.appliedRevision === savedRevision
-  byId('dashboard-link').hidden = !status.ready
   byId('status').hidden = !matches
   if (!matches) {
     byId('collector').hidden = true
@@ -81,36 +84,65 @@ function showTime(id, visible, value, empty) {
 }
 
 async function refresh() {
-  const request = ++latest
-  pending = true
-  byId('notice').textContent = '正在读取后台状态…'
+  if (!poll) return
+  request?.abort()
+  const current = new AbortController()
+  request = current
+  if (!lastStatus) byId('notice').textContent = '正在读取后台状态…'
   try {
-    const response = await fetch('../api/status', {
-      cache: 'no-store', credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(6_000),
+    await config.waitForService()
+    if (current.signal.aborted) return
+    const response = await fetch(config.url('api/status'), {
+      cache: 'no-store', credentials: 'omit', redirect: 'error', signal: AbortSignal.any([current.signal, AbortSignal.timeout(6_000)]),
     })
     if (!response.ok) throw new Error()
     const status = await response.json()
     if (status?.schema !== 'magpie-usage-hub/status-v1') throw new Error()
-    if (request === latest) showStatus(status)
+    if (request === current) {
+      readFailed = false
+      lastStatus = status
+      showStatus(status)
+    }
   } catch {
-    if (request === latest) {
-      byId('status').hidden = true
-      byId('collector').hidden = true
-      byId('dashboard-link').hidden = true
-      byId('notice').textContent = '暂时无法读取后台状态。请刷新，或检查 Magpie 插件日志。'
+    if (request === current) {
+      readFailed = true
+      byId('notice').textContent = lastStatus ? '刷新失败。当前显示上次读取的状态，可重试。'
+        : '暂时无法读取后台状态。请刷新，或检查 Magpie 插件日志。'
     }
   } finally {
-    if (request === latest) pending = false
+    if (request === current) request = undefined
   }
 }
 
-const back = window.usageHubHost.backSearch()
-byId('dashboard-link').href = `../dashboard/${back}`
-for (const [id, path] of [['sources-link', '../sources/'], ['settings-link', '../../../settings.html']]) {
-  byId(id).href = path + (back ? `?${new URLSearchParams({ back })}` : '')
+function stop() {
+  clearInterval(poll)
+  poll = undefined
+  request?.abort()
+  request = undefined
 }
-byId('refresh').addEventListener('click', refresh)
-void refresh()
-setInterval(() => {
-  if (!pending && !document.hidden) void refresh()
-}, 10_000)
+
+function updatePolling() {
+  if (!config.isActive('status') || document.hidden || !host.visible) { stop(); return }
+  if (!poll) {
+    poll = setInterval(() => { if (!request) void refresh() }, 10_000)
+    void refresh()
+  }
+}
+
+byId('refresh').addEventListener('click', () => {
+  if (readFailed) void config.reconnect()
+  void refresh()
+})
+document.addEventListener('visibilitychange', updatePolling)
+window.addEventListener('usage-host-visibility', updatePolling)
+config.register('status', {
+  enter({ revision }) {
+    const wasPolling = Boolean(poll)
+    savedRevision = revision
+    if (lastStatus) showStatus(lastStatus)
+    updatePolling()
+    if (wasPolling) void refresh()
+  },
+  leave: stop,
+})
+})()

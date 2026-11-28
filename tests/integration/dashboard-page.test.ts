@@ -547,35 +547,79 @@ describe('dashboard page', () => {
 })
 
 describe('diagnostic page', () => {
-  const window = { usageHubHost: { backSearch: () => '?view=details' } }
-  test('shows whether the service has adopted the saved Options revision', async () => {
+  function mount(revision: string, fetch: (path: string, init: RequestInit) => Promise<Response>) {
     const { control, document } = documentHarness()
+    let active = true
+    let panel!: { enter(route: { revision: string }): void; leave(): void }
+    const host = { visible: true }
+    const window = Object.assign(new EventTarget(), { usageHubHost: host, usageHubConfig: {
+      isActive: () => active, url: (path: string) => `../${path}`, waitForService() {},
+      register(_name: string, value: typeof panel) { panel = value },
+    } })
+    const timers = new Set<() => void>()
+    runInNewContext(`${options}\n;${diagnostics}`, {
+      document: Object.assign(new EventTarget(), document), window, AbortController, AbortSignal, fetch,
+      setInterval(callback: () => void) { timers.add(callback); return callback },
+      clearInterval(callback: () => void) { timers.delete(callback) },
+    })
+    panel.enter({ revision })
+    return { control, timers,
+      visibility(visible: boolean) { host.visible = visible; window.dispatchEvent(new Event('usage-host-visibility')) },
+      leave() { active = false; panel.leave() },
+      enter() { active = true; panel.enter({ revision }) },
+    }
+  }
+
+  test('shows whether the service has adopted the saved Options revision', async () => {
     const revision = '11111111-1111-4111-8111-111111111111'
     let ready = false
-    runInNewContext(`${options}\n${diagnostics}`, { document, window, AbortSignal, URLSearchParams, setInterval: () => 1,
-      location: { hash: `#revision=${revision}` }, fetch: async () => Response.json({ schema: 'magpie-usage-hub/status-v1', role: 'center', ready,
-        phase: ready ? 'ready' : 'starting', receiver: 'off', loadedRevision: revision, appliedRevision: ready ? revision : null }) })
+    const { control } = mount(revision, async () => Response.json({ schema: 'magpie-usage-hub/status-v1', role: 'center', ready,
+      phase: ready ? 'ready' : 'starting', receiver: 'off', loadedRevision: revision, appliedRevision: ready ? revision : null }))
     await Bun.sleep(0)
     expect(control('notice').textContent).toContain('等待后台采用')
     ready = true
     control('refresh').dispatchEvent(new Event('click'))
     await Bun.sleep(0)
     expect(control('applied-revision').textContent).toBe(revision)
-    expect(control('dashboard-link').href).toBe('../dashboard/?view=details')
-    expect(control('dashboard-link').hidden).toBe(false)
   })
 
   test('shows center retry guidance and the next retry time', async () => {
-    const { control, document } = documentHarness()
-    runInNewContext(`${options}\n${diagnostics}`, { document, window, AbortSignal, URLSearchParams, setInterval: () => 1, location: { hash: '' },
-      fetch: async () => Response.json({ schema: 'magpie-usage-hub/status-v1', role: 'center', ready: false,
-        phase: 'retrying', retryAt: observedAt, failure: { stage: 'center', code: 'timeout' } }) })
+    const { control } = mount('', async () => Response.json({ schema: 'magpie-usage-hub/status-v1', role: 'center', ready: false,
+      phase: 'retrying', retryAt: observedAt, failure: { stage: 'center', code: 'timeout' } }))
     await Bun.sleep(0)
     expect(control('runtime-heading').textContent).toBe('中心服务')
     expect(control('phase').textContent).toBe('等待重试')
     expect(control('failure-label').hidden).toBe(false)
     expect(control('failure').textContent).toContain('核对中心本机网关')
     expect(control('retry-row').hidden).toBe(false)
-    expect(control('dashboard-link').hidden).toBe(true)
+  })
+
+  test('pauses polling when hidden, ignores late responses and preserves the last successful status on error', async () => {
+    const reads: { pending: PromiseWithResolvers<Response>; signal: AbortSignal | null | undefined }[] = []
+    const ui = mount('', (_path, init) => {
+      const pending = Promise.withResolvers<Response>()
+      reads.push({ pending, signal: init.signal })
+      return pending.promise
+    })
+    const status = (phase: string) => Response.json({ schema: 'magpie-usage-hub/status-v1', role: 'center', phase })
+    await Bun.sleep(0)
+    ui.leave()
+    expect(reads[0].signal?.aborted).toBe(true)
+    expect(ui.timers.size).toBe(0)
+    ui.enter()
+    await Bun.sleep(0)
+    reads[1].pending.resolve(status('ready'))
+    reads[0].pending.resolve(status('blocked'))
+    await Bun.sleep(0)
+    expect(ui.control('phase').textContent).toBe('后台已就绪')
+    ui.visibility(false)
+    expect(ui.timers.size).toBe(0)
+    ui.visibility(true)
+    await Bun.sleep(0)
+    reads[2].pending.resolve(new Response(null, { status: 503 }))
+    await Bun.sleep(0)
+    expect(ui.control('notice').textContent).toContain('上次读取')
+    expect(ui.control('status').hidden).toBe(false)
+    expect(ui.control('phase').textContent).toBe('后台已就绪')
   })
 })

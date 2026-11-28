@@ -1,5 +1,6 @@
 (() => {
   const options = usageHubOptions
+  const config = window.usageHubConfig
   const element = id => document.getElementById(id)
   const inputs = Object.fromEntries(Object.keys(options.settingsView({})).map(name => [name, element(name)]))
   const offInputs = { enabled: element('enabled-off'), receiverEnabled: element('receiverEnabled-off') }
@@ -9,6 +10,7 @@
   const rebase = element('rebase-options')
   const settingsMessage = element('settings-message')
   const savedToast = element('settings-saved')
+  if (config) element('configuration-workspace').append(savedToast)
   const destinations = [['return-dashboard', 'dashboard'], ['sources-link', 'sources'], ['diagnostic-link', 'status']]
   const optionsWriteIntervalMs = 1000
   let saved
@@ -34,6 +36,7 @@
       return await Promise.race([
         new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('bridge_timeout')), 12_000) }),
         Promise.resolve().then(async () => {
+          if (config) return window.usageHubHost.getOptions()
           await window.magpie.ready
           return window.magpie.options.get()
         }),
@@ -72,6 +75,10 @@
     const revision = options.revision(saved?.configRevision)
     element('revision-value').textContent = revision
     element('settings-revision').hidden = !revision
+    if (config) {
+      if (saved) config.setRevision(revision)
+      return
+    }
     const href = saved && options.pageServiceLink(window.magpie?.service, window.location.href, saved)
     if (!href) return
     const back = options.dashboardSearch(new URL(window.location.href).searchParams.get('back'))
@@ -119,6 +126,7 @@
     if (result === 'loaded') message(unsaved ? '设置已刷新。草稿已保留。' : '')
     if (result === 'rebased') message(unsaved ? '已读取最新设置。请核对保留的草稿。' : '已读取最新设置。')
     if (result === 'confirmed') {
+      config?.saved(options.revision(saved?.configRevision))
       message(unsaved ? '有未保存的更改。' : '')
       if (!unsaved) {
         savedToast.textContent = '已保存'
@@ -130,11 +138,13 @@
 
   const session = options.createSession({
     get: readOptions,
+    submit: config?.submitOptions,
     async set(candidate) {
       try {
-        await window.magpie.options.set(candidate)
+        if (config) await window.usageHubHost.setOptions(candidate)
+        else await window.magpie.options.set(candidate)
       } finally {
-        nextWriteAt = performance.now() + optionsWriteIntervalMs
+        if (!config) nextWriteAt = performance.now() + optionsWriteIntervalMs
       }
     },
   }, render)
@@ -182,14 +192,17 @@
   reload.addEventListener('click', () => void session.refresh())
   rebase.addEventListener('click', session.adoptLatest)
   retry.addEventListener('click', dispatchSubmit)
-  for (const [id] of destinations) {
+  for (const [id] of config ? [['back-dashboard']] : destinations) {
     const link = element(id)
     link.addEventListener('click', async event => {
-      if (!saving) return
+      if (!saving || config && (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)) return
       event.preventDefault()
       await saving
-      if (snapshot.result === 'confirmed' && !hasDraft()) window.location.assign(link.href)
-    })
+      if (snapshot.result === 'confirmed' && !hasDraft()) {
+        await config?.waitForService()
+        window.location.assign(link.href)
+      }
+    }, true)
   }
   for (const input of [...Object.values(inputs), ...Object.values(offInputs)]) {
     input.addEventListener('input', () => {
@@ -218,5 +231,9 @@
       form.setAttribute('aria-busy', String(snapshot.writing || snapshot.refreshing))
     })
   })
-  void session.refresh()
+  if (config) {
+    config.register('settings', { enter() {
+      if (!saving && !snapshot?.refreshing && !snapshot?.differences && (!saved || !hasDraft() || snapshot.pending)) void session.refresh()
+    } })
+  } else void session.refresh()
 })()
