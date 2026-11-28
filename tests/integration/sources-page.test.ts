@@ -46,6 +46,8 @@ function harness(sources: object[] = [source], config: Record<string, unknown> =
   const writes: Record<string, unknown>[] = []
   const steps: string[] = []
   const location = new URL(`https://magpie.example/plugin/_magpie/service/sources/${hash}`)
+  const navigations: string[] = []
+  const browserLocation = Object.assign(location, { replace(relative: string) { navigations.push(new URL(relative, location).href) } })
   let saved = { ...config }
   const bridge = {
     async getOptions() { steps.push('get'); return { ...saved } },
@@ -69,7 +71,7 @@ function harness(sources: object[] = [source], config: Record<string, unknown> =
   }
   reply({ revision: revisionOne, sources })
   runInNewContext(script, {
-    window: { usageHubHost: bridge, location, history: { replaceState(_data: unknown, _title: string, relative: string) {
+    window: { usageHubHost: bridge, location: browserLocation, history: { replaceState(_data: unknown, _title: string, relative: string) {
       location.href = new URL(relative, location).href
     } } },
     document: { getElementById: control, querySelector: () => ({ content: adminToken }), createElement: () => new Control() },
@@ -84,7 +86,7 @@ function harness(sources: object[] = [source], config: Record<string, unknown> =
     },
     AbortSignal, Event, Intl, URL, URLSearchParams, crypto, setTimeout: (callback: () => void) => setTimeout(callback, 0),
   })
-  return { control, requests, replies, reply, replyCreate, lastBody, location, bridge, runtime, writes, steps, get saved() { return saved },
+  return { control, requests, replies, reply, replyCreate, lastBody, location, navigations, bridge, runtime, writes, steps, get saved() { return saved },
     click(id: string) { control(id).dispatchEvent(new Event('click', { cancelable: true })) },
     input(id: string, value: string | boolean) {
       const input = control(id)
@@ -135,11 +137,23 @@ describe('source management page', () => {
     expect(ui.location.hash).toContain(id)
     expect(ui.location.hash).not.toContain(digest)
     expect(ui.control('first-receipt').textContent).toBe('等待首次上报。')
+    expect(ui.navigations).toHaveLength(1)
+    const resume = new URL(ui.navigations[0])
+    expect(resume.searchParams.get('to')).toBe('sources')
+    expect(resume.searchParams.get('back')).toBe('?period=30d&via=conversation')
+    expect(new URLSearchParams(resume.hash.slice(1)).get('stage')).toBe('windows')
 
-    ui.reply({ revision: revisionTwo, sources: [{ ...source, id, phase: 'receiving', lastPageAt: '2026-11-27T00:00:00.000Z' }] })
-    ui.click('refresh-receipt')
+    const reopened = harness([{ ...source, id }], ui.saved, resume.hash)
     await Bun.sleep(0)
-    expect(ui.control('first-receipt').textContent).toMatch(/已收到用量。最近接收 .+。/)
+    expect(reopened.control('windows-settings').hidden).toBe(false)
+    expect(reopened.writes).toHaveLength(0)
+    expect(reopened.navigations).toHaveLength(0)
+    reopened.click('go-receipt')
+    expect(new URLSearchParams(reopened.location.hash.slice(1)).get('stage')).toBe('receipt')
+    reopened.reply({ revision: revisionTwo, sources: [{ ...source, id, phase: 'receiving', lastPageAt: '2026-11-27T00:00:00.000Z' }] })
+    reopened.click('refresh-receipt')
+    await Bun.sleep(0)
+    expect(reopened.control('first-receipt').textContent).toMatch(/已收到用量。最近接收 .+。/)
   })
 
   test('keeps dashboard filters on all configuration links and opens the wizard on demand', async () => {
@@ -528,7 +542,7 @@ describe('source management page', () => {
     const [history, live] = ui.control('sources-rows').children
     expect(history.children[1].textContent).toBe('历史来源')
     expect(live.children[1].textContent).toBe('已收到用量')
-    expect(live.children[2].textContent).toContain('最近接收')
+    expect(live.children[2].textContent).toContain('2026')
     ui.editFirst()
     expect(ui.control('historical-source-hint').hidden).toBe(false)
     expect(ui.control('source-form').hidden).toBe(true)
@@ -537,5 +551,29 @@ describe('source management page', () => {
     ui.click('save-source')
     ui.click('rebuild-source')
     expect(ui.requests).toHaveLength(1)
+  })
+
+  test('opens a source on its own subpage and confirms before discarding edits', async () => {
+    const ui = harness()
+    await Bun.sleep(0)
+    expect(ui.control('sources-section').hidden).toBe(false)
+    ui.editFirst()
+    expect(ui.control('sources-section').hidden).toBe(true)
+    expect(ui.control('editor').hidden).toBe(false)
+    expect(ui.location.hash).toBe(`#source=${source.id}`)
+    ui.input('source-name', '草稿')
+    ui.click('reset-source')
+    expect(ui.control('leave-confirmation').hidden).toBe(false)
+    ui.click('keep-editing')
+    expect(ui.control('source-name').value).toBe('草稿')
+    ui.click('reset-source')
+    ui.click('discard-source')
+    expect(ui.control('sources-section').hidden).toBe(false)
+    expect(ui.location.hash).toBe('')
+    expect(ui.requests).toHaveLength(1)
+    const restored = harness([source], {}, `#source=${source.id}`)
+    await Bun.sleep(0)
+    expect(restored.control('editor').hidden).toBe(false)
+    expect(restored.control('source-name').value).toBe(source.name)
   })
 })

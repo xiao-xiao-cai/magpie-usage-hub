@@ -1,4 +1,4 @@
-function createReceiverWizard(element, update) {
+function createReceiverWizard(element, update, renewManagement) {
   const options = usageHubOptions
   const host = window.usageHubHost
   const notice = element('receiver-notice')
@@ -8,6 +8,7 @@ function createReceiverWizard(element, update) {
   let showFields = false, restoredConflict = false
   let draftFields = new Set()
   let draftRevision = ''
+  let checkingReceipt = false
 
   function resume() {
     const params = new URLSearchParams(options.receiverFragment(window.location.hash).slice(1))
@@ -28,6 +29,7 @@ function createReceiverWizard(element, update) {
     }
     if (draftRevision) params.set('revision', draftRevision)
     if (registering) params.set('stage', 'register')
+    else if (completed) params.set('stage', checkingReceipt ? 'receipt' : 'windows')
     if (retryBind) params.set('retry', 'bind')
     fragment(options.receiverFragment(`#${params}`))
   }
@@ -42,6 +44,7 @@ function createReceiverWizard(element, update) {
   function open(id = '', restored, pendingRegistration = false) {
     active = true
     completed = false
+    checkingReceipt = false
     retryBind = Boolean(id && restored?.get('retry') === 'bind')
     showFields = false
     restoredConflict = false
@@ -90,7 +93,22 @@ function createReceiverWizard(element, update) {
       update()
     })
     session = current
-    void current.refresh()
+    const savedStep = restored?.get('stage')
+    void current.refresh().then(async () => {
+      if (session !== current || state?.result !== 'loaded' || !['windows', 'receipt'].includes(savedStep)) return
+      const view = options.settingsView(state.saved)
+      const revision = options.revision(state.saved.configRevision)
+      const endpoint = options.publicEndpoint(view.publicEndpoint)
+      if (!revision || !endpoint || !view.enabled || !view.receiverEnabled || draftFields.size) return
+      working = true
+      update()
+      try {
+        await confirmListening(revision, endpoint, savedStep === 'receipt')
+      } finally {
+        working = false
+        update()
+      }
+    })
   }
 
   function close() {
@@ -142,6 +160,25 @@ function createReceiverWizard(element, update) {
     return 'pending'
   }
 
+  async function confirmListening(revision, endpoint, receipt = false) {
+    notice.textContent = '来源已登记。正在确认中心已采用设置并监听接收端口…'
+    const result = await verify(revision)
+    retryBind = result === 'failed'
+    if (retryBind) showFields = true
+    completed = result === 'ready'
+    checkingReceipt = completed && receipt
+    remember(sourceId)
+    if (completed) {
+      element('windows-endpoint').textContent = endpoint
+      notice.textContent = ''
+      update()
+      element(checkingReceipt ? 'receipt-title' : 'windows-title').focus()
+    } else {
+      notice.textContent = retryBind ? '来源已登记，中心监听失败。请检查监听 IP 或端口占用，修改后重试。'
+        : '来源已登记，尚未确认中心已采用本次设置并开始监听。可重试或查看运行诊断。'
+    }
+  }
+
   async function finish(id, patch) {
     if (working || !session) return
     working = true
@@ -156,24 +193,8 @@ function createReceiverWizard(element, update) {
       if (matches && !retryBind) await session.refresh()
       else await session.submit(patch)
       if (!['confirmed', 'loaded'].includes(state.result)) return
-      remember(id)
-      notice.textContent = '来源已登记。正在确认中心已采用设置并监听接收端口…'
-      const result = await verify(state.saved.configRevision)
-      retryBind = result === 'failed'
-      if (retryBind) {
-        showFields = true
-        remember(id)
-      }
-      if (result === 'ready') {
-        completed = true
-        element('windows-endpoint').textContent = patch.publicEndpoint
-        notice.textContent = ''
-        element('windows-settings').hidden = false
-        element('windows-title').focus()
-      } else {
-        notice.textContent = retryBind ? '来源已登记，中心监听失败。请检查监听 IP 或端口占用，修改后重试。'
-          : '来源已登记，尚未确认中心已采用本次设置并开始监听。可重试或查看运行诊断。'
-      }
+      await confirmListening(state.saved.configRevision, patch.publicEndpoint)
+      if (completed) renewManagement()
     } finally {
       working = false
       update()
@@ -193,13 +214,31 @@ function createReceiverWizard(element, update) {
     element('edit-receiver').hidden = !reuse
     element('receiver-fields').hidden = !active || completed || Boolean(reuse)
     element('receiver-fields').disabled = blocked || !state?.saved || state.pending
-    element('windows-settings').hidden = !active || !completed
+    element('windows-settings').hidden = !active || !completed || checkingReceipt
+    element('receipt-settings').hidden = !active || !completed || !checkingReceipt
+    element('onboarding-steps').hidden = !active
+    const current = !completed ? 'register' : checkingReceipt ? 'receipt' : 'windows'
+    for (const step of ['register', 'windows', 'receipt']) element(`step-${step}`).setAttribute('aria-current', step === current ? 'step' : 'false')
     element('reload-receiver').hidden = !active || !['read_failed', 'readback_failed'].includes(state?.result)
     element('reload-receiver').disabled = blocked
     element('review-receiver').hidden = !active || !difference
     element('review-receiver').disabled = blocked
   }
 
+  element('go-receipt').addEventListener('click', () => {
+    if (!completed || working) return
+    checkingReceipt = true
+    remember(sourceId)
+    update()
+    element('receipt-title').focus()
+  })
+  element('go-windows').addEventListener('click', () => {
+    if (!completed || working) return
+    checkingReceipt = false
+    remember(sourceId)
+    update()
+    element('windows-title').focus()
+  })
   element('reload-receiver').addEventListener('click', () => { if (!working) void session?.refresh() })
   element('review-receiver').addEventListener('click', () => {
     if (working) return
@@ -254,6 +293,7 @@ function createReceiverWizard(element, update) {
 
   return { open, close, resume, validate, finish, render, beginRegistration, registered,
     get active() { return active }, get completed() { return completed },
+    get dirty() { return active && !completed && (draftFields.size > 0 || registering) },
     get busy() { return working || state?.writing || state?.refreshing },
     get blocked() { return Boolean(!state?.saved || state.pending || state.differences || restoredConflict || this.busy) },
   }

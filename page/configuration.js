@@ -64,7 +64,7 @@
     const href = saved && options.pageServiceLink(window.magpie?.service, window.location.href, saved)
     if (!href) return
     const back = options.dashboardSearch(new URL(window.location.href).searchParams.get('back'))
-    for (const [id, view] of [['return-dashboard', 'dashboard'], ['sources-link', 'sources'], ['diagnostic-link', 'status']]) {
+    for (const [id, view] of [['return-dashboard', 'dashboard'], ['sources-link', 'sources'], ['diagnostic-link', 'status'], ['settings-diagnostics', 'status']]) {
       const url = new URL(href)
       url.searchParams.set('to', view)
       if (back) url.searchParams.set('back', back)

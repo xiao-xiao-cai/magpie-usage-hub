@@ -9,23 +9,28 @@ const callsNotes = { through: '本机按原生请求，OTLP 按网关尝试', co
 const scopeNames = { through: '网关', conversation: '会话', all: '全部分项' }
 const periods = ['today', '7d', '30d', 'custom']
 const metrics = Object.keys(metricNames)
+const metricLabels = { tokens: 'Token', calls: '次数', cost: '已计价费用' }
+const percent = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFractionDigits: 1 })
 const svgNamespace = 'http://www.w3.org/2000/svg'
 const urlState = new URLSearchParams(usageHubOptions.dashboardSearch(location.search))
 const state = {
   view: urlState.get('view') || 'overview', period: urlState.get('period') || '7d',
   via: urlState.get('via') || 'through', metric: urlState.get('metric') || 'tokens',
-  layout: urlState.get('layout') || 'cards', sourceId: urlState.get('sourceId') || '', model: urlState.get('model'),
+  bucket: urlState.get('bucket') || 'auto', sourceId: urlState.get('sourceId') || '', model: urlState.get('model'),
   from: urlState.get('from') || '', to: urlState.get('to') || '',
+  detailFrom: urlState.get('detailFrom') || '', detailTo: urlState.get('detailTo') || '',
 }
 let usage
 let activeRequest
 let rowsRequest
 let retryTimer
+let retryRange
 let pageState
 let dateTime
 let shortTime
 let chartPoints = []
 let selectedPoint = 0
+const expandedModels = new Set()
 
 const timestamp = usageHubOptions.dashboardTimestamp
 function validRange(from, to) { return timestamp(from) < timestamp(to) }
@@ -40,19 +45,24 @@ function updateNavigation() {
   if (state.period === 'custom') { params.set('from', state.from); params.set('to', state.to) }
   if (state.sourceId) params.set('sourceId', state.sourceId)
   if (state.model !== null) params.set('model', state.model)
-  if (state.layout !== 'cards') params.set('layout', state.layout)
   if (state.metric !== 'tokens') params.set('metric', state.metric)
+  if (state.bucket !== 'auto') params.set('bucket', state.bucket)
+  if (state.detailFrom) { params.set('detailFrom', state.detailFrom); params.set('detailTo', state.detailTo) }
   const search = usageHubOptions.dashboardSearch(`?${params}`)
   if (search !== location.search) history.replaceState(null, '', search)
   const settings = `../sources/?${new URLSearchParams({ back: search })}`
   byId('settings').href = settings
   byId('register').href = `${settings}#add`
-  for (const [group, options] of [['view', ['overview', 'details']], ['period', periods], ['metric', metrics], ['layout', ['cards', 'table']]]) {
+  for (const [group, options] of [['view', ['overview', 'details']], ['period', periods], ['metric', metrics]]) {
     for (const option of options) byId(`${group}-${option}`).setAttribute('aria-pressed', String(state[group] === option))
   }
   byId('overview').hidden = state.view !== 'overview'
   byId('rows-section').hidden = state.view !== 'details'
   byId('model-field').hidden = state.view !== 'details'
+  byId('bucket').value = state.bucket
+  byId('detail-range').hidden = !state.detailFrom || !dateTime
+  byId('back-overview').hidden = !state.detailFrom
+  if (state.detailFrom && dateTime) byId('detail-range').textContent = `${formatTime(state.detailFrom)} 至 ${formatTime(state.detailTo)}（结束时间不含）`
 }
 
 function element(tag, text, className) {
@@ -107,11 +117,12 @@ function combine(sources, field, key) {
 }
 
 function grain() {
+  if (state.bucket !== 'auto') return state.bucket
   return state.period === 'today' || (state.period === 'custom' && timestamp(state.to) - timestamp(state.from) <= 86_400_000) ? 'hour' : 'day'
 }
 
 function summaryParams() {
-  const params = new URLSearchParams({ bucket: grain() })
+  const params = new URLSearchParams()
   if (state.period === 'custom') { params.set('from', state.from); params.set('to', state.to) }
   else params.set('period', state.period)
   if (state.via !== 'all') params.set('via', state.via)
@@ -155,18 +166,9 @@ function selectSource(sourceId) {
 function sourceButton(source) {
   const button = element('button', source.name, 'text-action')
   button.type = 'button'
-  button.addEventListener('click', () => { selectSource(source.id); byId('source').focus() })
+  button.setAttribute('aria-pressed', String(state.sourceId === source.id))
+  button.addEventListener('click', () => { selectSource(state.sourceId === source.id ? '' : source.id); byId('source').focus() })
   return button
-}
-
-function sourceRow(source) {
-  const row = element('tr')
-  cell(row, '', true).append(sourceButton(source))
-  const totals = source.totals
-  const values = source.hasPublishedData ? [number.format(tokens(totals)), number.format(totals.calls), pair(totals.input, totals.output), pair(totals.cacheRead, totals.cacheWrite), number.format(totals.reasoning), cost(totals.cost), number.format(totals.unpriced)] : Array(7).fill('—')
-  for (const value of values) cell(row, value)
-  if (totals.cacheUnknownCalls) note(row.children[4], `${number.format(totals.cacheUnknownCalls)} 条缓存未知`)
-  return row
 }
 
 function chartPath(values, width, height, inset) {
@@ -178,31 +180,44 @@ function chartPath(values, width, height, inset) {
   return values.length === 1 ? `M${coordinates[0]}h0.1` : `M${coordinates.join('L')}`
 }
 
-function sourceCard(source) {
-  const card = element('article', undefined, 'source-card')
-  const name = sourceButton(source)
-  const total = source.totals
-  const middle = element('div', undefined, 'source-volume')
-  const value = element('strong')
-  compactValue(value, source.hasPublishedData ? tokens(total) : null, 'Token')
-  middle.append(value, element('small', 'Token'))
+function metricColumn(totals, denominator, published = true) {
+  const value = metricValue(totals)
+  const amount = element('span', published ? metricText(totals) : '—', 'list-number')
+  if (state.metric === 'cost' && totals.unpriced) note(amount, `缺价 ${number.format(totals.unpriced)} 条`)
+  const ratio = published && denominator > 0 ? value / denominator : null
+  const share = element('span', undefined, 'list-share')
+  const bar = element('meter')
+  bar.setAttribute('aria-hidden', 'true')
+  bar.min = 0
+  bar.max = 1
+  bar.value = ratio ?? 0
+  share.append(bar, element('span', ratio === null ? '—' : percent.format(ratio)))
+  return [amount, share]
+}
+
+function sourceRow(source, denominator) {
+  const row = element('li', undefined, 'usage-row source-row')
+  const sparkline = element('span', undefined, 'source-sparkline')
   if (source.buckets.length) {
     const spark = document.createElementNS(svgNamespace, 'svg')
     spark.setAttribute('viewBox', '0 0 100 24')
     spark.setAttribute('aria-hidden', 'true')
     const line = document.createElementNS(svgNamespace, 'path')
     line.setAttribute('class', 'trend-line')
-    line.setAttribute('d', chartPath(source.buckets.map(bucket => tokens(bucket.totals)), 100, 24, 2))
+    line.setAttribute('d', chartPath(source.buckets.map(bucket => metricValue(bucket.totals)), 100, 24, 2))
     spark.append(line)
-    middle.append(spark)
+    sparkline.append(spark)
   }
-  const pricing = total.unpriced ? ` · ${number.format(total.unpriced)} 条缺价` : ''
-  const metadata = element('small', source.hasPublishedData ? `${number.format(total.calls)} 次 · ${cost(total.cost)} 已计价${pricing}` : '— 次 · — 已计价', 'detail-meta')
-  card.append(name, middle, metadata)
-  return card
+  row.append(sourceButton(source), ...metricColumn(source.totals, denominator, source.hasPublishedData), sparkline)
+  return row
 }
 
 function selectView(view) {
+  if (view === 'overview' && state.detailFrom) {
+    state.detailFrom = ''
+    state.detailTo = ''
+    resetRows()
+  }
   state.view = view
   updateNavigation()
   renderBilling()
@@ -214,40 +229,83 @@ function selectView(view) {
   } else if (view === 'details' && !pageState?.loaded) void loadRows(0)
 }
 
-function modelRow(item) {
-  const row = element('tr')
+function modelRow(item, denominator, index) {
+  const row = element('li', undefined, 'usage-row model-row')
   const link = element('button', item.model || '未标注模型', 'text-action')
   link.type = 'button'
   link.addEventListener('click', () => {
+    state.detailFrom = ''
+    state.detailTo = ''
     state.model = item.model
     byId('model').value = `model:${item.model}`
     resetRows()
     selectView('details')
     byId('model').focus()
   })
-  cell(row, '', true).append(link)
   const totals = item.totals
-  for (const value of [number.format(tokens(totals)), pair(totals.input, totals.output), pair(totals.cacheRead, totals.cacheWrite), number.format(totals.calls), cost(totals.cost), number.format(totals.unpriced)]) cell(row, value)
+  const details = element('dl', undefined, 'model-details')
+  details.id = `model-fields-${index}`
+  for (const [label, value] of [
+    ['输入 / 输出', pair(totals.input, totals.output)],
+    ['缓存读 / 写', pair(totals.cacheRead, totals.cacheWrite)],
+    ['缓存未知', number.format(totals.cacheUnknownCalls)],
+    ['推理 Token', number.format(totals.reasoning)],
+    ['次数', number.format(totals.calls)],
+    ['已计价费用', cost(totals.cost)],
+    ['缺价记录', number.format(totals.unpriced)],
+  ]) {
+    const field = element('div')
+    field.append(element('dt', label), element('dd', value))
+    details.append(field)
+  }
+  const toggle = element('button', '细项', 'quiet list-action')
+  toggle.type = 'button'
+  toggle.setAttribute('aria-label', `细项 ${link.textContent}`)
+  toggle.setAttribute('aria-controls', details.id)
+  const expand = open => {
+    details.hidden = !open
+    toggle.setAttribute('aria-expanded', String(open))
+    if (open) expandedModels.add(item.model)
+    else expandedModels.delete(item.model)
+  }
+  expand(expandedModels.has(item.model))
+  toggle.addEventListener('click', () => expand(details.hidden))
+  row.append(link, ...metricColumn(totals, denominator), toggle, details)
   return row
 }
 
 function metricValue(totals) { return state.metric === 'tokens' ? tokens(totals) : totals[state.metric] }
+function metricText(totals) { return state.metric === 'cost' ? cost(totals.cost) : `${number.format(metricValue(totals))} ${metricNames[state.metric]}` }
 
 function inspectPoint(index) {
   if (!chartPoints.length) return
   selectedPoint = Math.max(0, Math.min(chartPoints.length - 1, index))
   const point = chartPoints[selectedPoint]
-  const value = state.metric === 'cost' ? `${cost(point.totals.cost)} 已计价 · ${number.format(point.totals.unpriced)} 条缺价` : `${number.format(metricValue(point.totals))} ${metricNames[state.metric]}`
-  const label = `${formatTime(point.from)} 至 ${formatTime(point.to)} · ${value}`
-  byId('point-value').textContent = label
+  const totals = point.totals
+  const time = `${formatTime(point.from)} 至 ${formatTime(point.to)}`
+  const values = `${number.format(tokens(totals))} Token · 输入 / 输出 ${pair(totals.input, totals.output)} · ${number.format(totals.calls)} 次 · ${cost(totals.cost)} 已计价 · 缺价 ${number.format(totals.unpriced)} 条`
+  byId('point-time').textContent = time
+  byId('point-value').textContent = values
   const horizontal = chartPoints.length === 1 ? 500 : selectedPoint * 1000 / (chartPoints.length - 1)
   byId('point-guide').setAttribute('d', `M${horizontal} 4V120`)
   byId('plot').setAttribute('aria-valuenow', String(selectedPoint + 1))
-  byId('plot').setAttribute('aria-valuetext', label)
+  byId('plot').setAttribute('aria-valuetext', `${time} · ${values}`)
+}
+
+function openBucketDetails() {
+  if (!matchesSummary() || activeRequest || !chartPoints.length) return
+  const point = chartPoints[selectedPoint]
+  state.detailFrom = point.from
+  state.detailTo = point.to
+  state.model = null
+  byId('model').value = ''
+  resetRows()
+  selectView('details')
+  byId('rows-heading').focus()
 }
 
 function renderChart() {
-  byId('grain').textContent = usage.grain === 'hour' ? '按小时' : '按日'
+  byId('grain').textContent = usage.trendLimited ? '' : usage.grain === 'hour' ? '按小时' : usage.hourLimited ? '按日 · 所选区间超过小时趋势上限' : '按日'
   byId('chart').hidden = chartPoints.length === 0
   byId('trend-empty').hidden = chartPoints.length > 0
   if (!chartPoints.length) {
@@ -267,9 +325,16 @@ function renderChart() {
   inspectPoint(selectedPoint)
 }
 
-function showLayout() {
-  byId('source-cards').hidden = state.layout !== 'cards'
-  byId('sources-table').hidden = state.layout !== 'table'
+function renderLists(sources, totals) {
+  const denominator = usage.sources.reduce((sum, source) => sum + metricValue(source.totals), 0)
+  byId('source-metric').textContent = `${metricLabels[state.metric]}占比`
+  byId('summary-rows').replaceChildren(...usage.sources.map(source => sourceRow(source, denominator)))
+  const models = combine(sources, 'models', 'model').sort((left, right) => metricValue(right.totals) - metricValue(left.totals) || left.model.localeCompare(right.model))
+  byId('model-sort').textContent = `按${metricLabels[state.metric]}降序`
+  byId('model-rows').replaceChildren(...models.map((item, index) => modelRow(item, metricValue(totals), index)))
+  byId('models-empty').hidden = models.length > 0
+  byId('model-rows').hidden = models.length === 0
+  return models
 }
 
 function visibleSources() { return usage.sources.filter(source => !state.sourceId || source.id === state.sourceId) }
@@ -282,7 +347,7 @@ function renderBilling() {
     const item = state.view === 'details' && state.model !== null ? source.models.find(item => item.model === state.model) : source
     if (item) addTotals(totals, item.totals)
   }
-  byId('billing').hidden = false
+  byId('billing').hidden = state.view === 'details' && Boolean(state.detailFrom)
   byId('billed').textContent = sources.some(source => source.hasPublishedData) ? `${cost(totals.cost)} USD` : '—'
   byId('unpriced').hidden = !totals.unpriced
   byId('unpriced').textContent = `缺价 ${number.format(totals.unpriced)} 条`
@@ -307,21 +372,17 @@ function render() {
   byId('read-at').dateTime = usage.readAt
   byId('read-at').textContent = formatTime(usage.readAt)
   setOptions('source', [['', '全部来源'], ...usage.sources.map(source => [source.id, source.name])], state.sourceId)
-  byId('source-cards').replaceChildren(...sources.map(sourceCard))
-  byId('summary-rows').replaceChildren(...sources.map(sourceRow))
-  const models = combine(sources, 'models', 'model').sort((left, right) => tokens(right.totals) - tokens(left.totals) || left.model.localeCompare(right.model))
+  const models = renderLists(sources, totals)
   byId('usage-empty').hidden = models.length > 0
   byId('usage-empty').textContent = published ? '此时段暂无用量' : '用量准备中'
-  byId('model-rows').replaceChildren(...models.map(modelRow))
-  byId('models-empty').hidden = models.length > 0
-  byId('models-table').hidden = models.length === 0
   const names = models.map(item => item.model)
   if (state.model !== null && !names.includes(state.model)) names.push(state.model)
   setOptions('model', [['', '全部模型'], ...names.map(name => [`model:${name}`, name || '未标注模型'])], state.model === null ? '' : `model:${state.model}`)
+  const previousPoint = chartPoints[selectedPoint]?.from
   chartPoints = combine(sources, 'buckets', 'from').sort((left, right) => Date.parse(left.from) - Date.parse(right.from))
-  selectedPoint = chartPoints.length - 1
+  const previousIndex = chartPoints.findIndex(point => point.from === previousPoint)
+  selectedPoint = previousIndex < 0 ? chartPoints.length - 1 : previousIndex
   renderChart()
-  showLayout()
   updateNavigation()
   byId('results').hidden = false
 }
@@ -352,6 +413,7 @@ function rowsControls() {
   byId('previous-rows').disabled = Boolean(rowsRequest || activeRequest || !pageState?.index)
   byId('next-rows').disabled = Boolean(rowsRequest || activeRequest || !pageState?.next)
   byId('rows-section').setAttribute('aria-busy', String(Boolean(rowsRequest)))
+  byId('bucket-details').disabled = Boolean(activeRequest)
 }
 
 function resetRows() {
@@ -368,7 +430,7 @@ function resetRows() {
 
 async function loadRows(index) {
   if (!matchesSummary() || state.view !== 'details' || activeRequest || rowsRequest) return
-  const params = new URLSearchParams({ from: usage.range.from, to: usage.range.to })
+  const params = new URLSearchParams({ from: state.detailFrom || usage.range.from, to: state.detailTo || usage.range.to })
   if (state.sourceId) params.set('sourceId', state.sourceId)
   if (state.model !== null) params.set('model', state.model)
   if (usage.via !== 'all') params.set('via', usage.via)
@@ -408,14 +470,21 @@ async function loadRows(index) {
   }
 }
 
-async function refresh(startupRetries = 0) {
+async function refresh(startupRetries = 0, pinnedRange) {
   clearTimeout(retryTimer)
   activeRequest?.abort()
   const controller = new AbortController()
   activeRequest = controller
   const params = summaryParams()
   const key = params.toString()
+  const requestedGrain = grain()
+  if (pinnedRange) {
+    params.delete('period')
+    params.set('from', pinnedRange.from)
+    params.set('to', pinnedRange.to)
+  }
   const sameScope = usage?.key === key
+  retryRange = pinnedRange
   if (sameScope) {
     if (byId('results').hidden) render()
   } else {
@@ -431,27 +500,33 @@ async function refresh(startupRetries = 0) {
   byId('retry').hidden = true
   byId('reload').hidden = true
   try {
-    let data
-    try { data = await query('usage', params, controller.signal) }
-    catch (error) {
-      if (error.message !== 'bucket_range_too_large' || controller !== activeRequest) throw error
-      params.delete('bucket')
-      data = await query('usage', params, controller.signal)
-      data.trendLimited = true
+    let data, bucket = requestedGrain
+    for (;;) {
+      if (bucket) params.set('bucket', bucket)
+      else params.delete('bucket')
+      try { data = await query('usage', params, controller.signal); break }
+      catch (error) {
+        if (error.message !== 'bucket_range_too_large' || !bucket || controller !== activeRequest) throw error
+        bucket = bucket === 'hour' ? 'day' : null
+      }
     }
     if (controller !== activeRequest) return
     if (!validRange(data.range.from, data.range.to) || !Array.isArray(data.sources)) throw new Error('query_failed')
     const timeZone = data.range.timeZone
-    const bucket = grain()
     const nextDateTime = new Intl.DateTimeFormat('zh-CN', { timeZone, month: '2-digit', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset' })
-    const nextShortTime = new Intl.DateTimeFormat('zh-CN', bucket === 'hour' ? { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' } : { timeZone, month: '2-digit', day: '2-digit' })
+    const date = { month: '2-digit', day: '2-digit' }
+    const withDate = timestamp(data.range.to) - timestamp(data.range.from) > 86_400_000
+    const nextShortTime = new Intl.DateTimeFormat('zh-CN', bucket === 'hour'
+      ? { timeZone, ...(withDate ? date : {}), hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }
+      : { timeZone, ...date })
     const sources = data.sources.sort((left, right) => Number(right.id === 'local') - Number(left.id === 'local') || left.name.localeCompare(right.name))
-    usage = { ...data, sources, key, readAt: new Date().toISOString(), grain: bucket, via: state.via }
+    usage = { ...data, sources, key, readAt: new Date().toISOString(), grain: bucket, via: state.via,
+      hourLimited: requestedGrain === 'hour' && bucket === 'day', trendLimited: !bucket }
     dateTime = nextDateTime
     shortTime = nextShortTime
     const missingSource = state.sourceId && !sources.some(source => source.id === state.sourceId)
     if (missingSource) { state.sourceId = ''; state.model = null }
-    resetRows()
+    if (!pinnedRange || missingSource) resetRows()
     render()
     byId('notice').textContent = missingSource ? '原筛选的来源已不可用，现显示全部来源。' : ''
   } catch (error) {
@@ -485,6 +560,7 @@ for (const period of periods) byId(`period-${period}`).addEventListener('click',
   }
   if (state.period === period) return
   state.period = period
+  state.detailFrom = state.detailTo = ''
   updateNavigation()
   void refresh()
 })
@@ -495,6 +571,7 @@ byId('custom-range').addEventListener('submit', event => {
   const to = byId('to').value.trim()
   if (!validRange(from, to)) { byId('range-error').textContent = '请填写含时区的有效起止时间，结束须晚于开始，时间精度最多为毫秒。'; return }
   Object.assign(state, { period: 'custom', from, to })
+  state.detailFrom = state.detailTo = ''
   byId('range-error').textContent = ''
   updateNavigation()
   void refresh()
@@ -510,18 +587,29 @@ byId('model').addEventListener('change', () => {
   void loadRows(0)
 })
 for (const view of ['overview', 'details']) byId(`view-${view}`).addEventListener('click', () => selectView(view))
-for (const layout of ['cards', 'table']) byId(`layout-${layout}`).addEventListener('click', () => { state.layout = layout; showLayout(); updateNavigation() })
-for (const metric of metrics) byId(`metric-${metric}`).addEventListener('click', () => { state.metric = metric; renderChart(); updateNavigation() })
+byId('bucket').addEventListener('change', () => {
+  state.bucket = byId('bucket').value
+  updateNavigation()
+  void refresh(0, matchesSummary() ? usage.range : undefined)
+})
+for (const metric of metrics) byId(`metric-${metric}`).addEventListener('click', () => { state.metric = metric; render() })
+byId('bucket-details').addEventListener('click', openBucketDetails)
+byId('back-overview').addEventListener('click', () => {
+  selectView('overview')
+  byId(chartPoints.length ? 'plot' : 'view-overview').focus()
+})
 for (const type of ['pointermove', 'pointerdown']) byId('plot').addEventListener(type, event => {
   const bounds = byId('plot').getBoundingClientRect()
   if (bounds.width) inspectPoint(Math.round((event.clientX - bounds.left) / bounds.width * (chartPoints.length - 1)))
 })
 byId('plot').addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); openBucketDetails(); return }
   const keys = { ArrowLeft: selectedPoint - 1, ArrowDown: selectedPoint - 1,
     ArrowRight: selectedPoint + 1, ArrowUp: selectedPoint + 1, Home: 0, End: chartPoints.length - 1 }
   if (Object.hasOwn(keys, event.key)) { event.preventDefault(); inspectPoint(keys[event.key]) }
 })
-for (const id of ['refresh', 'retry']) byId(id).addEventListener('click', () => { void refresh() })
+byId('refresh').addEventListener('click', () => { void refresh() })
+byId('retry').addEventListener('click', () => { void refresh(0, retryRange) })
 for (const id of ['reload', 'rows-reload']) byId(id).addEventListener('click', () => location.reload())
 byId('rows-retry').addEventListener('click', () => { void loadRows(pageState.retryIndex) })
 byId('previous-rows').addEventListener('click', () => { if (pageState.index) void loadRows(pageState.index - 1) })

@@ -127,8 +127,9 @@ describe('plugin Options page', () => {
 
   test('preserves every supported dashboard selection and accepts only a valid ordered custom range', () => {
     const filters = { period: 'custom', from: '2026-11-26T08:00:00+08:00', to: '2026-11-27T00:00:00Z',
-      via: 'conversation', view: 'details', sourceId: revisionOne, model: '', metric: 'cost', layout: 'table' }
-    const raw = new URLSearchParams({ ...filters, token: 'fixture', after: 'fixture' })
+      via: 'conversation', view: 'details', sourceId: revisionOne, model: '', metric: 'cost', bucket: 'hour',
+      detailFrom: '2026-11-26T08:00:00+08:00', detailTo: '2026-11-26T09:00:00+08:00' }
+    const raw = new URLSearchParams({ ...filters, token: 'fixture', after: 'fixture', layout: 'table' })
     expect(Object.fromEntries(new URLSearchParams(page.dashboardSearch(String(raw))))).toEqual(filters)
     expect(page.dashboardSearch('?period=today&sourceId=local&model=vendor%2Fgpt')).toBe('?period=today&sourceId=local&model=vendor%2Fgpt')
     for (const from of ['2026-02-30T00:00:00Z', '2026-11-28T00:00:00Z', '2026-11-26T00:00:00', '2026-11-26T00:00:00.00001Z']) {
@@ -137,6 +138,7 @@ describe('plugin Options page', () => {
     }
     expect(page.dashboardSearch('?view=config&via=unknown&layout=mobile&metric=usd&sourceId=token&model=%00')).toBe('')
     expect(page.dashboardSearch(`?model=${'m'.repeat(513)}`)).toBe('')
+    expect(new URLSearchParams(page.dashboardSearch(String(new URLSearchParams({ ...filters, view: 'overview' })))).has('detailFrom')).toBe(false)
   })
 
   test('keeps the device recovery ID and only validated listener and endpoint fields', () => {

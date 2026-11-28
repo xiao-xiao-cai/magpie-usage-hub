@@ -61,43 +61,43 @@
           <section class="kpi"><strong id="kpi-calls">—</strong><h2>计量次数</h2><small id="calls-note"></small></section>
         </div>
         <section class="panel trend-panel" aria-labelledby="trend-heading">
-          <div class="toolbar panel-header"><div class="panel-title"><h2 id="trend-heading" class="section-heading">用量趋势</h2><small id="grain" class="muted"></small></div>
-            <div class="segmented" role="group" aria-label="趋势指标"><button id="metric-tokens" type="button" aria-pressed="true">Token</button><button id="metric-calls" type="button" aria-pressed="false">次数</button><button id="metric-cost" type="button" aria-pressed="false">费用</button></div>
+          <div class="toolbar panel-header"><div class="panel-title"><h2 id="trend-heading" class="section-heading">用量趋势</h2><small id="grain" class="muted" role="status"></small></div>
+            <div class="trend-controls">
+              <label class="inline-field" for="bucket">粒度 <select id="bucket"><option value="auto">自动</option><option value="hour">按小时</option><option value="day">按日</option></select></label>
+              <div class="segmented" role="group" aria-label="用量指标"><button id="metric-tokens" type="button" aria-pressed="true">Token</button><button id="metric-calls" type="button" aria-pressed="false">次数</button><button id="metric-cost" type="button" aria-pressed="false">费用</button></div>
+            </div>
           </div>
           <p id="trend-empty" class="empty" hidden></p>
           <div id="chart" hidden>
-            <div id="point-value" class="point-value"></div>
             <div class="plot-frame"><div id="y-axis" class="y-axis" aria-hidden="true"></div>
-              <div id="plot" role="slider" tabindex="0" aria-label="用量趋势时间点" aria-describedby="point-value chart-help" aria-valuemin="1" aria-valuemax="1" aria-valuenow="1">
+              <div id="plot" role="slider" tabindex="0" aria-label="用量趋势时段" aria-describedby="point-value chart-help" aria-valuemin="1" aria-valuemax="1" aria-valuenow="1">
               <svg viewBox="0 0 1000 124" preserveAspectRatio="none" aria-hidden="true">
                 <path class="grid-lines" d="M0 4H1000 M0 62H1000 M0 120H1000"/>
                 <path id="trend-area"/><path id="trend-line" class="trend-line"/>
                 <path id="point-guide" class="point-guide"/>
               </svg></div>
+              <div id="x-axis" class="x-axis" aria-hidden="true"></div>
             </div>
-            <div id="x-axis" class="x-axis" aria-hidden="true"></div>
-            <small id="chart-help" class="sr-only">使用左右方向键查看相邻时间点，Home 和 End 跳至首末时间点。</small>
+            <div class="trend-inspection">
+              <div><p id="point-time"></p><p id="point-value" class="point-value"></p></div>
+              <button id="bucket-details" type="button">查看此时段明细</button>
+            </div>
+            <small id="chart-help" class="sr-only">使用左右方向键查看相邻时段，Home 和 End 跳至首末时段，按 Enter 查看明细。</small>
           </div>
         </section>
-        <section aria-labelledby="sources-heading">
-          <div class="toolbar panel-header sources-head"><h2 id="sources-heading" class="section-heading">来源分布</h2>
-            <div class="segmented" role="group" aria-label="来源展示"><button id="layout-cards" type="button" aria-pressed="true">卡片</button><button id="layout-table" type="button" aria-pressed="false">表格</button></div>
-          </div>
-          <div id="source-cards" class="source-cards"></div>
-          <div id="sources-table" class="table-scroll table-card" role="region" aria-label="来源用量" tabindex="0" hidden><table class="data-table">
-            <thead><tr><th>来源</th><th>Token</th><th>次数</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>推理</th><th>已计价费用</th><th>缺价记录</th></tr></thead>
-            <tbody id="summary-rows"></tbody></table></div>
+        <section class="list-section" aria-labelledby="sources-heading">
+          <div class="toolbar list-heading"><h2 id="sources-heading" class="section-heading">来源分布</h2><small id="source-metric" class="muted"></small></div>
+          <ul id="summary-rows" class="usage-list" role="list" aria-labelledby="sources-heading"></ul>
         </section>
-        <section class="panel" aria-labelledby="models-heading">
-          <div class="toolbar panel-header"><h2 id="models-heading" class="section-heading">模型排行</h2><small class="muted">按 Token 降序</small></div>
+        <section class="list-section" aria-labelledby="models-heading">
+          <div class="toolbar list-heading"><h2 id="models-heading" class="section-heading">模型排行</h2><small id="model-sort" class="muted"></small></div>
           <p id="models-empty" class="empty" hidden>所选范围内暂无模型用量。</p>
-          <div id="models-table" class="table-scroll" role="region" aria-label="模型用量排行" tabindex="0"><table class="data-table">
-            <thead><tr><th>模型</th><th>Token</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>次数</th><th>已计价费用</th><th>缺价记录</th></tr></thead>
-            <tbody id="model-rows"></tbody></table></div>
+          <ul id="model-rows" class="usage-list" role="list" aria-labelledby="models-heading"></ul>
         </section>
       </div>
       <section id="rows-section" class="panel" aria-labelledby="rows-heading" hidden>
-        <div class="toolbar panel-header"><h2 id="rows-heading" class="section-heading">用量明细</h2></div>
+        <div class="toolbar panel-header"><h2 id="rows-heading" class="section-heading" tabindex="-1">用量明细</h2><button id="back-overview" class="quiet" type="button" hidden>返回趋势</button></div>
+        <p id="detail-range" class="muted" hidden></p>
         <div class="feedback"><span id="rows-notice" role="status"></span><button id="rows-retry" type="button" hidden>重试明细</button><button id="rows-reload" type="button" hidden>重新加载页面</button></div>
         <div id="rows-table" class="table-scroll" role="region" tabindex="0" aria-label="用量明细表" hidden><table class="data-table">
           <thead><tr><th>调用时间</th><th>来源</th><th>模型</th><th>分项</th><th>输入 / 输出</th><th>缓存读 / 写</th><th>推理 Token</th><th>估算费用（USD）</th><th>HTTP 状态</th><th>用时（毫秒）</th></tr></thead>

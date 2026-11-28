@@ -17,32 +17,36 @@
   <main class="workspace" aria-label="来源管理">
     <header class="page-toolbar config-toolbar">
       <a id="back-dashboard" class="quiet" href="../dashboard/">返回用量看板</a>
-      <nav class="segmented" aria-label="配置页面"><span aria-current="page">来源管理</span><a id="settings-link" href="../../../settings.html">中心设置</a><a id="status-link" href="../status/">运行诊断</a></nav>
+      <button id="reset-source" class="quiet" type="button" hidden>‹ 返回来源列表</button>
+      <nav id="config-nav" class="segmented" aria-label="配置页面"><span aria-current="page">来源管理</span><a id="settings-link" href="../../../settings.html">中心设置</a><a id="status-link" href="../status/">运行诊断</a></nav>
     </header>
 
-    <section class="panel" aria-labelledby="sources-heading">
-      <header class="toolbar"><h2 id="sources-heading" class="section-heading">用量来源</h2><div class="controls"><button id="refresh-sources" type="button">刷新</button><button id="add-source" class="primary" type="button">添加设备</button></div></header>
-      <p id="sources-notice" class="notice" role="status">正在读取来源…</p>
-      <p id="management-reentry" hidden><a id="resume-management" href="../?to=sources">重新打开来源管理</a></p>
-      <div id="sources-section">
-        <p id="sources-empty" class="muted" hidden>尚无已登记的来源。</p>
-        <div id="sources-table" class="table-scroll" role="region" tabindex="0" aria-label="来源列表" hidden>
-          <table class="data-table">
-            <thead>
-              <tr><th scope="col">来源</th><th scope="col">状态</th><th scope="col">最近活动</th><th scope="col">上报凭据</th><th scope="col">操作</th></tr>
-            </thead>
-            <tbody id="sources-rows"></tbody>
-          </table>
-        </div>
-      </div>
+    <p id="sources-notice" class="notice" role="status">正在读取来源…</p>
+    <p id="management-reentry" hidden><a id="resume-management" href="../?to=sources">重新打开来源管理</a></p>
+    <section id="sources-section" aria-labelledby="sources-heading">
+      <header class="toolbar sources-header"><h2 id="sources-heading" class="section-heading">用量来源</h2><div class="controls"><button id="refresh-sources" type="button">刷新</button><button id="add-source" class="primary" type="button">添加设备</button></div></header>
+      <p id="sources-empty" class="muted" hidden>尚无已登记的来源。</p>
+      <ul id="sources-rows" class="source-list" role="list" aria-labelledby="sources-heading" hidden></ul>
     </section>
 
-    <section id="editor" class="panel" aria-labelledby="source-title" hidden>
-      <h2 id="source-title" class="section-heading" tabindex="-1">添加设备</h2>
+    <section id="editor" aria-labelledby="source-title" hidden>
+      <header class="toolbar sources-header"><h2 id="source-title" class="section-heading" tabindex="-1">添加设备</h2><button id="refresh-editor" type="button">刷新</button></header>
+      <div id="leave-confirmation" class="confirmation" role="group" aria-labelledby="leave-text" hidden>
+        <p id="leave-text">当前有未保存的更改。</p>
+        <div class="controls"><button id="keep-editing" type="button">继续编辑</button><button id="discard-source" type="button">放弃更改并返回</button></div>
+      </div>
+      <ol id="onboarding-steps" class="onboarding-steps" aria-label="设备接入步骤" hidden>
+        <li id="step-register">登记来源</li><li id="step-windows">配置 Windows</li><li id="step-receipt">核对首次上报</li>
+      </ol>
       <p id="source-identity" class="muted" hidden>来源 ID <code id="source-id"></code></p>
-      <p id="local-source-hint" class="muted" hidden>中心本机网关在插件设置中配置。</p>
-      <p id="historical-source-hint" class="muted" hidden>此来源的历史明细可在用量看板查询。</p>
-      <form id="source-form" novalidate>
+      <section id="source-overview" class="panel source-block" aria-labelledby="source-overview-title" hidden>
+        <h3 id="source-overview-title" class="section-heading">来源状态</h3>
+        <dl id="source-facts" class="source-facts"></dl>
+        <a id="local-source-hint" href="../../../settings.html" hidden>打开中心设置</a>
+        <a id="historical-source-hint" href="../dashboard/" hidden>查看此来源的用量</a>
+      </section>
+      <form id="source-form" class="panel source-block" novalidate>
+        <h3 id="source-form-title" class="section-heading">基本信息</h3>
         <fieldset id="source-fields" class="form-grid" disabled>
           <div id="name-field" class="form-field">
             <label for="source-name">来源名称</label>
@@ -77,7 +81,7 @@ try { [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes(
       <p id="receiver-notice" class="notice" role="status"></p>
       <button id="reload-receiver" type="button" hidden>重新读取中心设置</button>
       <button id="review-receiver" type="button" hidden>采用最新设置并保留草稿</button>
-      <div id="windows-settings" hidden>
+      <section id="windows-settings" class="panel source-block" aria-labelledby="windows-title" hidden>
         <h3 id="windows-title" class="section-heading" tabindex="-1">配置 Windows Magpie</h3><p>中心接收已就绪。在设备的「设置 → 可观测性」填写下列值并开启 OTLP export。</p>
         <dl id="windows-values" class="windows-values">
           <dt>Collector</dt><dd>OTLP</dd>
@@ -90,13 +94,23 @@ try { [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes(
         <button id="copy-settings" type="button">复制配置清单</button>
         <p>在生成令牌的 PowerShell 窗口执行命令，再粘贴到 OTLP headers。</p>
         <pre><code id="header-command">"Authorization=Bearer%20$usageHubToken" | Set-Clipboard</code></pre><button type="button" id="copy-header">复制请求头命令</button>
+        <button id="go-receipt" class="primary" type="button">下一步：核对上报</button>
+      </section>
+      <section id="receipt-settings" class="panel source-block" aria-labelledby="receipt-title" hidden>
+        <h3 id="receipt-title" class="section-heading" tabindex="-1">核对首次上报</h3>
         <p>在设备上发起一次新调用，再核对上报状态。</p>
+        <div class="controls"><button id="go-windows" type="button">返回 Windows 配置</button>
         <button id="refresh-receipt" type="button">核对上报状态</button>
+        </div>
         <p id="first-receipt" class="notice" role="status"></p>
-      </div>
+      </section>
       <p id="copy-notice" class="notice" role="status"></p>
-      <button id="resume-source" type="button" hidden>配置设备接入</button>
-      <div id="source-credentials" class="source-tools" hidden>
+      <p id="source-notice" class="notice" role="status"></p>
+      <div id="revision-review" class="source-tools" hidden>
+        <p id="latest-source" class="muted"></p>
+        <button id="review-latest" type="button">载入最新修订并保留草稿</button>
+      </div>
+      <section id="source-credentials" class="panel source-block" aria-label="上报凭据" hidden>
         <h3 class="section-heading">上报凭据</h3>
         <p id="credential-status" class="muted"></p>
         <form id="rotation-form" class="controls" novalidate>
@@ -111,7 +125,12 @@ try { [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes(
           <button id="revoke-pending" type="button" hidden>撤销待用令牌</button>
           <button id="revoke-all" type="button" hidden>撤销全部令牌</button>
         </div>
-      </div>
+        <p id="credential-notice" class="notice" role="status"></p>
+      </section>
+      <section id="source-connection" class="panel source-block" aria-label="设备接入" hidden>
+        <div class="toolbar"><h3 class="section-heading">设备接入</h3><button id="resume-source" type="button" hidden>配置设备接入</button></div>
+        <p id="connection-state" class="muted" hidden>启用该来源并登记上报凭据后可配置接入。</p>
+      </section>
       <div id="recovery-tools" class="controls source-tools" hidden>
         <button id="rebuild-source" type="button">确认同源重建</button>
       </div>
@@ -121,12 +140,6 @@ try { [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes(
           <button id="confirm-action" type="button">确认</button>
           <button id="cancel-action" type="button">取消</button>
         </div>
-      </div>
-      <div class="controls source-tools"><button id="reset-source" type="button" hidden>返回来源列表</button></div>
-      <p id="source-notice" class="notice" role="status"></p>
-      <div id="revision-review" hidden>
-        <p id="latest-source" class="muted"></p>
-        <button id="review-latest" type="button">载入最新修订并保留草稿</button>
       </div>
     </section>
   </main>

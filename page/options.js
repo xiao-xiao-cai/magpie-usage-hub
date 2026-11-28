@@ -45,7 +45,7 @@ const usageHubOptions = (() => {
     const params = new URLSearchParams(typeof raw === 'string' ? raw : '')
     const filters = new URLSearchParams()
     for (const [key, choices] of Object.entries({ view: ['overview', 'details'], period: ['today', '7d', '30d'],
-      via: ['through', 'conversation', 'all'], metric: ['tokens', 'calls', 'cost'], layout: ['cards', 'table'],
+      via: ['through', 'conversation', 'all'], metric: ['tokens', 'calls', 'cost'], bucket: ['hour', 'day'],
     })) {
       const value = params.get(key)
       if (choices.includes(value)) filters.set(key, value)
@@ -56,6 +56,12 @@ const usageHubOptions = (() => {
       filters.set('period', 'custom')
       filters.set('from', from)
       filters.set('to', to)
+    }
+    const detailFrom = params.get('detailFrom')
+    const detailTo = params.get('detailTo')
+    if (filters.get('view') === 'details' && dashboardTimestamp(detailFrom) < dashboardTimestamp(detailTo)) {
+      filters.set('detailFrom', detailFrom)
+      filters.set('detailTo', detailTo)
     }
     const sourceId = params.get('sourceId')
     if (sourceId === 'local' || revision(sourceId)) filters.set('sourceId', sourceId)
@@ -134,7 +140,8 @@ const usageHubOptions = (() => {
     const id = revision(value)
     if (!id) return ''
     const result = new URLSearchParams({ add: id })
-    if (params.get('stage') === 'register') result.set('stage', 'register')
+    const stage = params.get('stage')
+    if (['register', 'windows', 'receipt'].includes(stage)) result.set('stage', stage)
     if (params.get('retry') === 'bind') result.set('retry', 'bind')
     const address = params.get('ip')
     if (isListenAddress(address)) result.set('ip', address)
@@ -146,6 +153,13 @@ const usageHubOptions = (() => {
     const baseline = params.get('revision')
     if (baseline === 'initial' || revision(baseline)) result.set('revision', baseline)
     return `#${result}`
+  }
+
+  function sourceFragment(rawHash) {
+    const saved = receiverFragment(rawHash)
+    if (saved) return saved
+    const value = new URLSearchParams(typeof rawHash === 'string' ? rawHash.replace(/^#/, '') : '').get('source')
+    return value === 'local' || revision(value) ? `#source=${value}` : ''
   }
 
   function isTimeZone(value) {
@@ -265,6 +279,6 @@ const usageHubOptions = (() => {
   }
 
   return { FieldError, revision, createId, centerEnabled, dashboardSearch, dashboardTimestamp, pageServiceLink, publicEndpoint,
-    receiverFragment, settingsView, settingsPatch, createSession }
+    receiverFragment, sourceFragment, settingsView, settingsPatch, createSession }
 })()
 if (typeof window !== 'undefined') window.usageHubOptions = usageHubOptions

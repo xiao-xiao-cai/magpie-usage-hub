@@ -10,7 +10,7 @@
       const revision = window.usageHubOptions.revision(new URLSearchParams(url.hash.slice(1)).get('revision'))
       if (revision) target.hash = new URLSearchParams({ revision }).toString()
     }
-    if (destination === 'sources') target.hash = window.usageHubOptions.receiverFragment(url.hash)
+    if (destination === 'sources') target.hash = window.usageHubOptions.sourceFragment(url.hash)
     location.replace(target.href)
   } else if (isCenter) {
     location.replace(`dashboard/${back}`)

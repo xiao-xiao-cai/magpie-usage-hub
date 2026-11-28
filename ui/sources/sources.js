@@ -31,7 +31,10 @@ let stale = false
 let needsReview = false
 let managementExpired = false
 let confirmation
-const receiver = createReceiverWizard(byId, controls)
+let discardPending = false
+let returnId = ''
+const sourceButtons = new Map()
+const receiver = createReceiverWizard(byId, controls, () => window.location.replace(managementAddress()))
 const back = window.usageHubHost.backSearch()
 const navigation = back ? `?back=${encodeURIComponent(back)}` : ''
 const reentry = new URLSearchParams({ to: 'sources' })
@@ -39,6 +42,12 @@ if (back) reentry.set('back', back)
 byId('back-dashboard').href = `../dashboard/${back}`
 byId('settings-link').href = `../../../settings.html${navigation}`
 byId('status-link').href = `../status/${navigation}`
+byId('local-source-hint').href = byId('settings-link').href
+
+function setSourceAddress(id = '') {
+  const { pathname, search } = window.location
+  window.history.replaceState(null, '', `${pathname}${search}${id ? `#source=${id}` : ''}`)
+}
 
 function draft() {
   const name = fields.name.value.trim()
@@ -112,21 +121,27 @@ function controls() {
   const wizard = receiver.active
   const editable = !base.id || otlp
   const waiting = busy || receiver.busy
-  const blocked = waiting || stale || !snapshot || conflict()
+  const blocked = waiting || stale || !snapshot || conflict() || discardPending
   const editing = Boolean(base.id)
+  const inEditor = wizard || editing
   const { name, enabled, digest, rotation } = draft()
   const credential = latest?.credentials
 
-  byId('editor').hidden = !wizard && !editing
+  byId('editor').hidden = !inEditor
+  byId('sources-section').hidden = inEditor
+  byId('back-dashboard').hidden = inEditor
+  byId('config-nav').hidden = inEditor
+  byId('leave-confirmation').hidden = !discardPending
   byId('add-source').disabled = waiting || !snapshot
   byId('refresh-sources').disabled = waiting
+  byId('refresh-editor').disabled = waiting || discardPending
   byId('refresh-receipt').disabled = waiting
   byId('management-reentry').hidden = !managementExpired
-  if (managementExpired) byId('resume-management').href = `../?${reentry}${usageHubOptions.receiverFragment(window.location.hash)}`
+  if (managementExpired) byId('resume-management').href = managementAddress()
   byId('sources-section').setAttribute('aria-busy', String(waiting))
   form.hidden = !editable || receiver.completed
   form.setAttribute('aria-busy', String(waiting))
-  byId('source-fields').disabled = waiting || !snapshot || !editable
+  byId('source-fields').disabled = waiting || !snapshot || !editable || discardPending
   byId('name-field').hidden = editing && wizard
   byId('enabled-field').hidden = wizard
   byId('create-credential').hidden = editing
@@ -138,12 +153,22 @@ function controls() {
   byId('source-id').textContent = latest && !local ? latest.id : ''
   byId('local-source-hint').hidden = !local
   byId('historical-source-hint').hidden = !historical
+  if (historical) {
+    const search = new URLSearchParams(back)
+    search.set('sourceId', latest.id)
+    search.set('view', 'overview')
+    byId('historical-source-hint').href = `../dashboard/${usageHubOptions.dashboardSearch(`?${search}`)}`
+  }
+  byId('source-overview').hidden = !latest || wizard
+  byId('source-form-title').textContent = wizard ? editing ? '确认中心接收设置' : '登记来源' : '基本信息'
   byId('source-credentials').hidden = !otlp || wizard
+  byId('source-connection').hidden = !otlp || wizard
+  byId('connection-state').hidden = !otlp || canConnect(latest)
   byId('resume-source').hidden = wizard || !canConnect(latest)
   byId('resume-source').disabled = blocked || Boolean(confirmation)
   byId('credential-status').textContent = otlp ? credentialLabel(latest) : ''
   rotationForm.hidden = Boolean(credential?.pending && !rotation)
-  fields.rotation.disabled = busy
+  fields.rotation.disabled = busy || discardPending
   byId('rotate-source').textContent = credential?.current ? '登记新令牌' : '登记令牌'
   byId('rotate-source').disabled = blocked || Boolean(confirmation) || !otlp || Boolean(credential?.pending) || !rotation
   byId('revoke-current').hidden = !otlp || !credential?.current
@@ -157,8 +182,8 @@ function controls() {
   byId('action-confirmation').hidden = !confirmation
   byId('confirm-action').disabled = blocked
   byId('cancel-action').disabled = busy
-  byId('reset-source').hidden = !wizard && !editing
-  byId('reset-source').disabled = waiting
+  byId('reset-source').hidden = !inEditor
+  byId('reset-source').disabled = waiting || discardPending
   byId('revision-review').hidden = stale || !conflict()
   byId('review-latest').disabled = busy || Boolean(editing && !latest)
   byId('latest-source').textContent = latest
@@ -179,21 +204,16 @@ function showEditor(source = newSource) {
     : source.transport === 'otlp' ? `编辑来源 · ${source.name}` : source.name
   restore({ name: source.name, enabled: source.enabled, digest: '', rotation: '' })
   notice.textContent = ''
+  byId('credential-notice').textContent = ''
+  byId('source-facts').replaceChildren(...sourceFacts(base.id ? source : undefined))
 }
 
-function appendCell(row, value, title = false) {
-  const element = document.createElement(title ? 'th' : 'td')
-  if (title) element.scope = 'row'
+function appendCell(row, value, className) {
+  const element = document.createElement('span')
+  element.className = className
   element.textContent = value
   row.append(element)
   return element
-}
-
-function appendNote(cell, text) {
-  const note = document.createElement('span')
-  note.className = 'detail-meta'
-  note.textContent = text
-  cell.append(note)
 }
 
 function sourceStatus(source) {
@@ -215,50 +235,55 @@ function formatTime(value) {
 }
 
 function rowFor(source) {
-  const row = document.createElement('tr')
-  appendCell(row, source.name, true)
-  const status = appendCell(row, sourceStatus(source))
-  const reason = source.transport === 'local' && recoveryText.get(source.recoveryReason)
-  if (reason) appendNote(status, reason)
-  if (source.gap?.missingRows > 0) appendNote(status, `上次重建未找到 ${source.gap.missingRows} 条旧记录`)
-  const lastPage = formatTime(source.lastPageAt)
-  if (source.transport === 'otlp') {
-    appendCell(row, lastPage ? `最近接收 ${lastPage}` : '暂无')
-  } else {
-    const contact = appendCell(row, formatTime(source.lastSeenAt) || '暂无')
-    const syncedAt = formatTime(source.lastSyncedAt)
-    if (syncedAt) appendNote(contact, `最近完成 ${syncedAt}`)
-    if (lastPage) appendNote(contact, `最近确认页 ${lastPage}`)
-  }
-  appendCell(row, credentialLabel(source))
-  const actions = appendCell(row, '')
+  const row = document.createElement('li')
+  row.className = 'source-list-row'
+  appendCell(row, source.name, 'source-list-name')
+  appendCell(row, sourceStatus(source), 'source-list-status')
+  appendCell(row, formatTime(source.transport === 'otlp' ? source.lastPageAt : source.lastSeenAt) || '暂无活动', 'source-list-time')
+  const actions = appendCell(row, '', 'source-list-action')
   const button = document.createElement('button')
+  button.className = 'quiet'
   button.type = 'button'
   button.textContent = source.transport === 'otlp' ? '编辑' : '查看'
   button.setAttribute('aria-label', `${button.textContent} ${source.name}`)
   button.addEventListener('click', () => {
     if (busy || receiver.busy) return
-    if (source.id !== base.id || receiver.active) {
-      if (Object.keys(draft()).length || receiver.active && !receiver.completed) {
-        notice.textContent = '请先完成当前操作，或点「返回来源列表」放弃草稿。'
-        return
-      }
-      receiver.close()
-      showEditor(source)
-      controls()
-    }
-    if (source.transport === 'otlp') fields.name.focus()
-    else byId('source-title').focus()
+    returnId = source.id
+    setSourceAddress(source.id)
+    showEditor(source)
+    controls()
+    byId('source-title').focus()
   })
   actions.append(button)
+  sourceButtons.set(source.id, button)
   return row
+}
+
+function sourceFacts(source) {
+  if (!source) return []
+  const entries = [['状态', sourceStatus(source)]]
+  if (source.transport === 'otlp') entries.push(['最近接收', formatTime(source.lastPageAt) || '暂无'])
+  if (source.transport === 'local') {
+    entries.push(['最近活动', formatTime(source.lastSeenAt) || '暂无'], ['最近完成', formatTime(source.lastSyncedAt) || '暂无'],
+      ['最近确认页', formatTime(source.lastPageAt) || '暂无'])
+    const reason = recoveryText.get(source.recoveryReason)
+    if (reason) entries.push(['恢复原因', reason])
+    if (source.gap?.missingRows > 0) entries.push(['上次重建缺口', `${source.gap.missingRows} 条旧记录`])
+  }
+  return entries.flatMap(([label, value]) => ['dt', 'dd'].map((tag, index) => {
+    const field = document.createElement(tag)
+    field.textContent = index ? value : label
+    return field
+  }))
 }
 
 function present(next) {
   snapshot = next
+  sourceButtons.clear()
   byId('sources-rows').replaceChildren(...next.sources.map(rowFor))
-  byId('sources-table').hidden = !next.sources.length
+  byId('sources-rows').hidden = !next.sources.length
   byId('sources-empty').hidden = next.sources.length > 0
+  byId('source-facts').replaceChildren(...sourceFacts(selected()))
 }
 
 async function loadSources() {
@@ -296,6 +321,7 @@ async function loadSources() {
         showEditor(source)
         notice.textContent = '请先启用来源并登记上报凭据。'
       } else if (source || !restored.id || awaiting) {
+        if (source) returnId = source.id
         receiver.open(restored.id, restored.params, Boolean(awaiting))
         showEditor(source || newSource)
         if (awaiting) notice.textContent = '最新列表中未查到此次登记。请重新填写名称和摘要，再手动提交。'
@@ -306,9 +332,24 @@ async function loadSources() {
         byId('sources-notice').textContent = '已登记的来源不存在。请核对来源列表。'
         return
       }
+    } else if (first && usageHubOptions.sourceFragment(window.location.hash).startsWith('#source=')) {
+      returnId = new URLSearchParams(window.location.hash.slice(1)).get('source')
+      const source = next.sources.find(item => item.id === returnId)
+      showEditor(source)
+      if (!source) {
+        setSourceAddress()
+        byId('sources-notice').textContent = '此来源已不可用，请核对来源列表。'
+        return
+      }
+      controls()
+      byId('source-title').focus()
     } else showEditor(selected())
   }
   byId('sources-notice').textContent = ''
+}
+
+function managementAddress() {
+  return `../?${reentry}${usageHubOptions.sourceFragment(window.location.hash)}`
 }
 
 function expireManagement() {
@@ -342,6 +383,7 @@ async function refresh() {
 
 async function mutate(body, receiverPatch) {
   if (busy || stale || !snapshot || conflict()) return
+  const notice = ['rotate', 'revoke'].includes(body.action) ? byId('credential-notice') : byId('source-notice')
   const previousDraft = draft()
   confirmation = undefined
   busy = true
@@ -389,10 +431,10 @@ async function mutate(body, receiverPatch) {
   }
 }
 
-function digestFrom(field) {
+function digestFrom(field, feedback = notice) {
   const value = field.value.trim()
   if (/^[0-9a-f]{64}$/i.test(value)) return value.toLowerCase()
-  notice.textContent = '请填写 64 位十六进制的令牌摘要。'
+  feedback.textContent = '请填写 64 位十六进制的令牌摘要。'
   field.focus()
 }
 
@@ -421,6 +463,7 @@ function bindSubmit(target, button, submit) {
 }
 
 byId('refresh-sources').addEventListener('click', refresh)
+byId('refresh-editor').addEventListener('click', refresh)
 byId('refresh-receipt').addEventListener('click', refresh)
 bindSubmit(form, byId('save-source'), () => {
   const name = fields.name.value.trim()
@@ -444,7 +487,7 @@ bindSubmit(form, byId('save-source'), () => {
   }
 })
 bindSubmit(rotationForm, byId('rotate-source'), () => {
-  const digest = digestFrom(fields.rotation)
+  const digest = digestFrom(fields.rotation, byId('credential-notice'))
   if (digest) void mutate({ action: 'rotate', id: base.id, digest })
 })
 for (const slot of ['current', 'pending', 'all']) {
@@ -484,16 +527,33 @@ function startWizard(source) {
   controls()
   byId('source-title').focus()
 }
-byId('add-source').addEventListener('click', () => startWizard())
+byId('add-source').addEventListener('click', () => { returnId = ''; startWizard() })
 byId('resume-source').addEventListener('click', () => {
   if (!byId('resume-source').hidden && !byId('resume-source').disabled) startWizard(selected())
 })
-byId('reset-source').addEventListener('click', () => {
+function returnToSources() {
   if (busy || receiver.busy || !snapshot) return
+  discardPending = false
   receiver.close()
+  setSourceAddress()
   showEditor()
   controls()
-  byId('add-source').focus()
+  const trigger = sourceButtons.get(returnId) || byId('add-source')
+  trigger.focus()
+  returnId = ''
+}
+byId('reset-source').addEventListener('click', () => {
+  if (busy || receiver.busy || !snapshot) return
+  if (!Object.keys(draft()).length && !receiver.dirty) { returnToSources(); return }
+  discardPending = true
+  controls()
+  byId('keep-editing').focus()
+})
+byId('discard-source').addEventListener('click', returnToSources)
+byId('keep-editing').addEventListener('click', () => {
+  discardPending = false
+  controls()
+  byId('reset-source').focus()
 })
 byId('review-latest').addEventListener('click', () => {
   if (busy || stale || !conflict() || byId('review-latest').disabled) return

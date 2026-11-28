@@ -5,8 +5,16 @@
   min-inline-size: 0;
 }
 
-#settings-fields > .form-grid { margin-block: 8px; }
-.full-width { grid-column: 1 / -1; }
+.settings-heading { margin-block-end: 8px; }
+.settings-group + .settings-group { margin-block-start: 8px; }
+.settings-group h3 { margin-block-end: 6px; }
+.settings-row, .settings-switch { padding-block: 8px; border-block-start: 1px solid var(--line-2); }
+.settings-row:last-child, .settings-switch:last-child { padding-block-end: 0; }
+.settings-row { grid-template-columns: minmax(0, 1fr) minmax(14rem, 23rem); align-items: center; gap: 4px 12px; }
+.settings-row small { grid-column: 2; }
+.settings-switch { justify-content: space-between; }
+.settings-actions { margin-block-start: 10px; }
+.settings-row input[type="number"] { max-width: 8rem; justify-self: end; }
 
 .actions {
   display: flex;
@@ -32,4 +40,10 @@
 
 .difference {
   padding-inline-start: 20px;
+}
+
+@media (max-width: 540px) {
+  .settings-row { grid-template-columns: minmax(0, 1fr); }
+  .settings-row small { grid-column: 1; }
+  .settings-row input[type="number"] { justify-self: start; }
 }
