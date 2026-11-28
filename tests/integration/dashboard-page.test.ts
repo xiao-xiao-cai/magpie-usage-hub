@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 
 const dashboard = readFileSync(new URL('../../ui/dashboard/dashboard.js', import.meta.url), 'utf8')
+const host = readFileSync(new URL('../../ui/host.js', import.meta.url), 'utf8')
 const diagnostics = readFileSync(new URL('../../ui/status.js', import.meta.url), 'utf8')
 const options = readFileSync(new URL('../../page/options.js', import.meta.url), 'utf8')
 const queryToken = 'e'.repeat(64)
@@ -30,9 +31,11 @@ class Control extends EventTarget {
   tabIndex = -1
   children: Control[] = []
   attributes = new Map<string, string>()
+  classList = { add() {}, remove() {} }
   append(...children: Control[]) { this.children.push(...children) }
   replaceChildren(...children: Control[]) { this.children = children }
   setAttribute(name: string, value: string) { this.attributes.set(name, value) }
+  removeAttribute(name: string) { this.attributes.delete(name) }
   focus() {}
 }
 
@@ -42,36 +45,50 @@ function documentHarness() {
     if (!controls.has(id)) controls.set(id, new Control())
     return controls.get(id)!
   }
-  return { control, document: { getElementById: control, querySelector: () => ({ content: queryToken }),
+  return { control, document: { documentElement: { dataset: {}, style: { setProperty() {} } },
+    getElementById: control, querySelector: () => ({ content: queryToken }),
     createElement: () => new Control(), createElementNS: () => new Control() } }
 }
 
-function dashboardHarness(search = '') {
+function dashboardHarness(search = '', embedded = false) {
   const { control, document } = documentHarness()
   const requests: { path: string; init: RequestInit; pending: PromiseWithResolvers<Response> }[] = []
-  const location = { search, reloads: 0, reload() { this.reloads++ } }
+  const displayReads: typeof requests = []
+  const origin = 'https://fixture.example'
+  const location = { href: `${origin}/dashboard/${search}`, pathname: '/dashboard/', search, reloads: 0, reload() { this.reloads++ } }
+  const messages: { id: number; method: string; params?: unknown }[] = []
+  const window = Object.assign(new EventTarget(), { parent: { postMessage(message: typeof messages[number]) { messages.push(message) } } })
+  if (!embedded) Object.defineProperty(window, 'parent', { value: window })
   const timers = new Map<number, () => void>()
   let nextTimer = 0
   let currentTime = Date.parse(observedAt)
   class Clock extends Date {
     constructor(value?: string | number) { super(value ?? currentTime) }
   }
-  runInNewContext(`${options}\n${dashboard}`, { document, AbortController, AbortSignal, URLSearchParams, Date: Clock, Intl, location,
+  runInNewContext(`${options}\n;${host}\n;${dashboard}`, { window, document, AbortController, AbortSignal, URL, URLSearchParams, Event, Date: Clock, Intl, location,
     history: { replaceState(_state: unknown, _title: string, search: string) { location.search = search } },
     setTimeout(fn: () => void) { timers.set(++nextTimer, fn); return nextTimer }, clearTimeout(id: number) { timers.delete(id) },
     fetch(path: string, init: RequestInit) {
       const pending = Promise.withResolvers<Response>()
-      requests.push({ path, init, pending })
+      const queue = path === '../api/usage-display' ? displayReads : requests
+      queue.push({ path, init, pending })
       return pending.promise
     },
   })
-  return { control, requests, location, timers,
+  return { control, requests, displayReads, location, timers, messages,
+    bridge(message: object, sender = window.parent, senderOrigin = origin) {
+      window.dispatchEvent(Object.assign(new Event('message'), { origin: senderOrigin, source: sender, data: { magpie: 1, ...message } }))
+    },
     sourceCards: () => control('summary-rows').children.map(item => item.children[0]),
     setClock(value: string) { currentTime = Date.parse(value) },
     click(id: string) { control(id).dispatchEvent(new Event('click')) },
     change(id: string, value: string) { control(id).value = value; control(id).dispatchEvent(new Event('change')) },
     params(index: number) { return Object.fromEntries(new URL(requests[index].path, 'https://fixture.example/dashboard/').searchParams) },
     async reply(index: number, data: unknown, status = 200) { requests[index].pending.resolve(Response.json(data, { status })); await Bun.sleep(0) },
+    async replyDisplay(index: number, chineseUnits: boolean | null) {
+      displayReads[index].pending.resolve(Response.json({ chineseUnits }))
+      await Bun.sleep(0)
+    },
   }
 }
 
@@ -85,12 +102,12 @@ describe('dashboard page', () => {
     expect(ui.control('register-banner').hidden).toBe(true)
     expect(ui.control('results').hidden).toBe(false)
     expect(ui.control('kpi-tokens').textContent).toBe('46')
-    expect(ui.control('token-note').textContent).toBe('输入 22 / 输出 24')
+    expect(ui.control('token-note').textContent).toBe('输入 22 · 输出 24')
     expect(ui.control('kpi-cache').textContent).toBe('8')
     expect(ui.control('cache-note').textContent).toContain('2 条缓存未知')
     expect(ui.control('kpi-reasoning').textContent).toBe('4')
     expect(ui.control('kpi-calls').textContent).toBe('4')
-    expect(ui.control('billed').textContent).toBe('$0.002 USD')
+    expect(ui.control('billed').textContent).toBe('$0.002')
     expect(ui.control('unpriced').textContent).toBe('缺价 2 条')
     expect(ui.control('model-rows').children).toHaveLength(1)
     const [center, remote] = ui.sourceCards()
@@ -120,7 +137,7 @@ describe('dashboard page', () => {
     const cards = ui.sourceCards()
     expect(cards).toHaveLength(4)
     expect(cards[0].children[0].textContent).toBe(local.name)
-    expect(cards[0].children[4].children[1].textContent).toBe('96.4%')
+    expect(cards[0].children[4].children[1].textContent).toBe('96%')
     expect(cards.find(item => item.children[0].textContent === waiting.name)?.children[1].textContent).toBe('—')
     const indicator = ui.control('kpi-tokens')
     expect(indicator).toMatchObject({ textContent: '1.3K', tabIndex: 0 })
@@ -131,7 +148,7 @@ describe('dashboard page', () => {
     expect(ui.control('source').value).toBe('local')
     expect(ui.control('kpi-tokens').attributes.get('data-exact')).toBe('Token 1,234')
     expect(ui.sourceCards()[0].attributes.get('aria-pressed')).toBe('true')
-    expect(ui.sourceCards()[0].children[4].children[1].textContent).toBe('96.4%')
+    expect(ui.sourceCards()[0].children[4].children[1].textContent).toBe('96%')
     ui.sourceCards()[0].dispatchEvent(new Event('click'))
     expect(ui.control('source').value).toBe('')
     expect(ui.sourceCards()[0].attributes.get('aria-pressed')).toBe('false')
@@ -182,11 +199,11 @@ describe('dashboard page', () => {
     expect(ui.control('register-banner').hidden).toBe(true)
     expect(ui.control('usage-empty').textContent).toBe('此时段暂无用量')
     expect(ui.control('kpi-tokens').textContent).toBe('0')
-    expect(ui.control('billed').textContent).toBe('$0.00 USD')
+    expect(ui.control('billed').textContent).toBe('$0.000')
     expect(ui.control('summary-rows').children).toHaveLength(2)
     expect(ui.sourceCards()[0].children[4].children[1].textContent).toBe('—')
     ui.click('metric-cost')
-    expect(ui.sourceCards()[0].children[1].textContent).toBe('$0.00')
+    expect(ui.sourceCards()[0].children[1].textContent).toBe('$0.000')
     expect(ui.sourceCards()[0].children[4].children[1].textContent).toBe('—')
     ui.click('view-details')
     await ui.reply(2, { rows: [], nextPage: null })
@@ -202,37 +219,37 @@ describe('dashboard page', () => {
       { ...local, totals: { ...priced, calls: 3, input: 85, cost: 0.75, unpriced: 1 }, models: [{ model: 'target', totals: priced }, { model: 'other', totals: other }] },
       { ...windows, totals: nonpriced, models: [{ model: 'target', totals: nonpriced }] },
     ] })
-    expect(ui.control('billed').textContent).toBe('$0.75 USD')
+    expect(ui.control('billed').textContent).toBe('$0.750')
     expect(ui.control('unpriced').textContent).toBe('缺价 2 条')
     const [first] = ui.control('model-rows').children
     expect(first.children[0].textContent).toBe('target')
-    expect(first.children[1].textContent).toBe('130 Token')
+    expect(first.children[1].children[0].textContent).toBe('130 Token')
     first.children[3].dispatchEvent(new Event('click'))
     expect(first.children[4].hidden).toBe(false)
     expect(first.children[4].children[0].children[1].textContent).toBe('120 / 10')
     ui.click('metric-cost')
     const [mostExpensive, target] = ui.control('model-rows').children
     expect(mostExpensive.children[0].textContent).toBe('other')
-    expect(mostExpensive.children[2].children[1].textContent).toBe('66.7%')
+    expect(mostExpensive.children[2].children[1].textContent).toBe('67%')
     expect(target.children[4].hidden).toBe(false)
     target.children[0].dispatchEvent(new Event('click'))
     expect(ui.control('model').value).toBe('model:target')
     expect(ui.params(1)).toEqual({ from: range.from, to: range.to, via: 'conversation', model: 'target' })
-    expect(ui.control('billed').textContent).toBe('$0.25 USD')
+    expect(ui.control('billed').textContent).toBe('$0.250')
     expect(ui.control('unpriced').textContent).toBe('缺价 1 条')
     await ui.reply(1, { rows: [
       { ...row, model: 'target', sourceId: 'local', via: 'direct', input: 80, output: 10, cacheRead: 0, cost: 0.25 },
       { ...row, model: 'target', cost: 0 },
       { ...row, model: 'target', input: 40, cacheRead: 0 },
     ], nextPage: null })
-    expect(ui.control('detail-rows').children.map(detail => detail.children[7].textContent)).toEqual(['$0.25', '$0.00', '缺价'])
+    expect(ui.control('detail-rows').children.map(detail => detail.children[7].textContent)).toEqual(['$0.250', '$0.000', '—'])
     ui.click('view-overview')
-    expect(ui.control('billed').textContent).toBe('$0.75 USD')
+    expect(ui.control('billed').textContent).toBe('$0.750')
     ui.click('view-details')
-    expect(ui.control('billed').textContent).toBe('$0.25 USD')
+    expect(ui.control('billed').textContent).toBe('$0.250')
     expect(ui.requests).toHaveLength(2)
     ui.change('model', '')
-    expect(ui.control('billed').textContent).toBe('$0.75 USD')
+    expect(ui.control('billed').textContent).toBe('$0.750')
     expect(ui.params(2)).not.toHaveProperty('model')
   })
 
@@ -251,7 +268,9 @@ describe('dashboard page', () => {
     expect(detail.children[1].textContent).toBe(windows.name)
     expect(detail.children[3].textContent).toBe('OTLP 会话')
     expect(detail.children[5].children[0].textContent).toBe('缓存计数未知')
-    expect(detail.children[7].textContent).toBe('缺价')
+    expect(detail.children[5].textContent).toBe('— / —')
+    expect(detail.children[7]).toMatchObject({ textContent: '—', title: '缺价' })
+    expect(detail.children[9].textContent).toBe('—')
     ui.click('next-rows')
     expect(ui.params(2)).toEqual({ ...filters, page: 'fixture-next-page' })
     await ui.reply(2, { error: { code: 'invalid_page' } }, 400)
@@ -396,6 +415,112 @@ describe('dashboard page', () => {
     expect(ui.control('notice').textContent).toBe('')
     expect(ui.control('read-at').dateTime).toBe(later)
     expect(ui.control('range-label').textContent).toBe(originalRange)
+  })
+
+  test('reads host units and total currency independently while keeping source, trend selection and cursor page', async () => {
+    const ui = dashboardHarness('?sourceId=local', true)
+    const values = { ...totals, input: 123_456, output: 0, calls: 1000, cost: 0.00012, unpriced: 1 }
+    const source = { ...local, totals: values, models: [{ model: '', totals: values }], buckets: buckets.map(bucket => ({ ...bucket, totals: values })) }
+    const visible = { event: 'visibility', data: { visible: true } }
+    ui.bridge(visible, { postMessage() {} })
+    ui.bridge(visible, undefined, 'https://other.example')
+    expect(ui.messages.map(item => item.method)).toEqual(['hello'])
+    await ui.reply(0, { range, sources: [source] })
+    expect(ui.control('kpi-tokens').textContent).toBe('123K')
+    expect(ui.control('kpi-calls').textContent).toBe('1000')
+    expect(ui.control('billed').textContent).toBe('$0.00012')
+    ui.control('plot').dispatchEvent(Object.assign(new Event('keydown'), { key: 'Home' }))
+    ui.control('model-rows').children[0].children[3].dispatchEvent(new Event('click'))
+    ui.click('bucket-details')
+    const sample = { ...row, sourceId: 'local', input: 123_456, cost: 0.00012, durationMs: 1500 }
+    await ui.reply(1, { rows: [sample], nextPage: 'cursor' })
+    ui.click('next-rows')
+    await ui.reply(2, { rows: [sample], nextPage: null })
+    expect(ui.params(2)).toMatchObject({ from: range.from, to: middle, sourceId: 'local', page: 'cursor' })
+    expect(ui.control('detail-rows').children[0].children[4].children[0].attributes.get('data-exact')).toBe('输入 / 输出 123,456 / 0')
+
+    ui.bridge({ id: ui.messages[0].id, result: { dark: false, lang: 'zh', visible: true } })
+    await Bun.sleep(0)
+    expect(ui.messages[1]).toMatchObject({ method: 'read', params: { name: 'usage:day' } })
+    expect(ui.displayReads[0].init.headers).toEqual({ 'X-Magpie-Usage-Query': queryToken })
+    await ui.replyDisplay(0, true)
+    ui.bridge({ id: ui.messages[1].id, result: { currency: 'cny', rate: 0 } })
+    await Bun.sleep(0)
+    expect(ui.control('kpi-tokens').textContent).toBe('12.3 万')
+    expect(ui.control('detail-rows').children[0].children[7].textContent).toBe('$0.00012')
+    ui.bridge(visible)
+    ui.bridge(visible)
+    await ui.replyDisplay(2, true)
+    await ui.replyDisplay(1, false)
+    ui.bridge({ id: ui.messages[3].id, result: { currency: 'cny', rate: 7 } })
+    ui.bridge({ id: ui.messages[2].id, result: { currency: 'usd', rate: 7 } })
+    await Bun.sleep(0)
+    expect(ui.control('kpi-tokens').textContent).toBe('12.3 万')
+    expect(ui.control('billed').textContent).toBe('¥0.00084')
+    expect(ui.control('detail-rows').children[0].children[4].children[0].textContent).toBe('12.3 万 / 0')
+    expect(ui.control('detail-rows').children[0].children[7].textContent).toBe('¥0.00084')
+    expect(ui.control('detail-rows').children[0].children[9]).toMatchObject({ textContent: '1.5 秒', title: '1,500 毫秒' })
+    expect(ui.control('current-page').textContent).toBe('第 2 页')
+    expect(ui.control('plot').attributes.get('aria-valuenow')).toBe('1')
+    expect(ui.control('model-rows').children[0].children[4].hidden).toBe(false)
+    expect(ui.control('source').value).toBe('local')
+    expect(ui.requests).toHaveLength(3)
+    ui.click('metric-cost')
+    expect(ui.control('y-axis').children[0].textContent).toBe('¥0.00')
+    ui.bridge(visible)
+    await ui.replyDisplay(3, null)
+    ui.bridge({ id: ui.messages[4].id, result: { currency: 'usd', rate: 7 } })
+    await Bun.sleep(0)
+    expect(ui.control('kpi-tokens').textContent).toBe('12.3 万')
+    expect(ui.control('billed').textContent).toBe('$0.00012')
+    expect(ui.control('detail-rows').children[0].children[7].textContent).toBe('$0.00012')
+    ui.bridge(visible)
+    await ui.replyDisplay(4, false)
+    ui.bridge({ id: ui.messages[5].id, result: { currency: 'cny', rate: 7 } })
+    await Bun.sleep(0)
+    expect(ui.control('kpi-tokens').textContent).toBe('123K')
+    expect(ui.control('billed').textContent).toBe('¥0.00084')
+  })
+
+  test('applies native Chinese count thresholds and keeps the native yuan symbol at large amounts', async () => {
+    const ui = dashboardHarness('?view=details', true)
+    ui.bridge({ id: ui.messages[0].id, result: { dark: false, lang: 'zh-TW', visible: true } })
+    await Bun.sleep(0)
+    await ui.replyDisplay(0, true)
+    ui.bridge({ id: ui.messages[1].id, result: { currency: 'cny', rate: 2 } })
+    await Bun.sleep(0)
+    const values = { ...totals, input: 123_456_789, output: 0, cost: 55_000_500, unpriced: 1 }
+    await ui.reply(0, { range, sources: [{ ...local, totals: values, models: [{ model: 'fixture', totals: values }], buckets: [{ ...buckets[0], totals: values }] }] })
+    const sizes = [9999, 10_000, 100_000_000, 0]
+    const prices = [4999.995, 5000, 50_000_000, null]
+    await ui.reply(1, { rows: sizes.map((input, index) => ({ ...row, input, cost: prices[index] })), nextPage: null })
+    const rendered = ui.control('detail-rows').children
+    const cells = rendered.map(item => item.children[7])
+    expect(rendered.slice(0, 3).map(item => item.children[4].children[0].textContent)).toEqual(['9999 / 0', '1 萬 / 0', '1 億 / 0'])
+    expect(cells.map(item => item.textContent)).toEqual(['¥9999.99', '¥10000.00', '¥100000000.00', '—'])
+    expect(ui.control('kpi-tokens').textContent).toBe('1.23 億')
+    expect(ui.control('billed').textContent).toBe('¥110001000.00')
+    ui.click('metric-cost')
+    expect(ui.sourceCards()[0].children[1].textContent).toBe('¥110001000.00')
+    expect(ui.control('model-rows').children[0].children[1].children[0].textContent).toBe('¥110001000.00')
+    expect(ui.control('y-axis').children[0].textContent).toBe('¥110001000')
+    expect(ui.control('plot').attributes.get('aria-valuetext')).toContain('¥110001000.00 已计价')
+    ui.bridge({ event: 'theme', data: { dark: false, lang: 'en' } })
+    expect(ui.control('kpi-tokens').textContent).toBe('123M')
+  })
+
+  test('matches native count, price and duration boundaries in compact cells', async () => {
+    const ui = dashboardHarness('?view=details')
+    const sizes = [999, 1000, 100_000, 1_000_000, 10_000_000, 1_200_000_000, 9999, 10_000, 100_000_000]
+    const prices = [0, 0.125, 0.00012, 12.3, null, Number.MIN_VALUE, 1, 0.001, 0.25]
+    const durations = [999, 1000, 9999, 10_000, 12_123, 0, null, 850, 1500]
+    await ui.reply(0, { range, sources: [local, windows] })
+    await ui.reply(1, { rows: sizes.map((input, index) => ({ ...row, input, cost: prices[index], durationMs: durations[index] })), nextPage: null })
+    const rendered = ui.control('detail-rows').children
+    expect(rendered.map(item => item.children[4].children[0].textContent)).toEqual(
+      ['999', '1.0K', '100K', '1.0M', '10M', '1.20B', '10.0K', '10.0K', '100M'].map(label => `${label} / 0`))
+    expect(rendered.map(item => item.children[7].textContent)).toEqual(['$0.000', '$0.125', '$0.00012', '$12.30', '—', '$4.9e-324', '$1.00', '$0.001', '$0.250'])
+    expect(rendered.map(item => item.children[9].textContent)).toEqual(['999 毫秒', '1.0 秒', '10.0 秒', '10 秒', '12 秒', '—', '—', '850 毫秒', '1.5 秒'])
   })
 
   test('bounds automatic startup retries and offers page reload for expired credentials on either endpoint', async () => {

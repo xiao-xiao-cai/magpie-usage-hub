@@ -1,4 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { join } from 'node:path'
+import { isRecord } from './center/http.ts'
 import type { SyncPhase } from './sync/protocol.ts'
 
 export const diagnosticPort = 3493
@@ -79,7 +81,8 @@ const managementAssets = new Map([
   ['/sources/sources.js', ['sources/sources.js', 'text/javascript; charset=utf-8']],
   ['/sources/sources.css', ['sources/sources.css', 'text/css; charset=utf-8']],
 ])
-const queryPaths = new Set(['/api/usage', '/api/usage/rows'])
+const displayPath = '/api/usage-display'
+const queryPaths = new Set(['/api/usage', '/api/usage/rows', displayPath])
 const adminHeader = 'X-Magpie-Usage-Admin'
 const queryHeader = 'X-Magpie-Usage-Query'
 type DashboardQuery = (url: URL, signal: AbortSignal) => Promise<Response>
@@ -96,8 +99,20 @@ function preflight(headers: Headers, header: string, methods: string) {
   return new Response(null, { status: 204, headers })
 }
 
+async function readChineseUnits(hostDirectory: string | undefined): Promise<boolean | null> {
+  if (!hostDirectory) return null
+  try {
+    const settings: unknown = await Bun.file(join(hostDirectory, 'settings.json')).json()
+    if (!isRecord(settings)) return null
+    if (settings.chineseUnits === undefined) return false
+    return typeof settings.chineseUnits === 'boolean' ? settings.chineseUnits : null
+  } catch (error) {
+    return error instanceof Error && 'code' in error && error.code === 'ENOENT' ? false : null
+  }
+}
+
 export function serveDiagnostics(
-  diagnostics: Diagnostics, port = diagnosticPort, dashboard?: DashboardQuery, manage?: ManageSources,
+  diagnostics: Diagnostics, port = diagnosticPort, dashboard?: DashboardQuery, manage?: ManageSources, hostDirectory?: string,
 ) {
   const adminToken = manage ? randomBytes(32).toString('hex') : ''
   const queryToken = dashboard ? randomBytes(32).toString('hex') : ''
@@ -165,6 +180,7 @@ export function serveDiagnostics(
         if (!admits(request, queryHeader, queryToken)) {
           return Response.json({ error: { code: 'query_token_invalid' } }, { status: 403, headers })
         }
+        if (path === displayPath) return Response.json({ chineseUnits: await readChineseUnits(hostDirectory) }, { headers })
         try {
           const result = await dashboard(url, request.signal)
           headers.set('Content-Type', 'application/json; charset=utf-8')
@@ -183,11 +199,13 @@ export function serveDiagnostics(
   })
 }
 
-export function startDiagnostics(diagnostics: Diagnostics, dashboard?: DashboardQuery, manage?: ManageSources): void {
+export function startDiagnostics(
+  diagnostics: Diagnostics, dashboard?: DashboardQuery, manage?: ManageSources, hostDirectory?: string,
+): void {
   let reported = false
   function listen() {
     try {
-      serveDiagnostics(diagnostics, diagnosticPort, dashboard, manage).unref()
+      serveDiagnostics(diagnostics, diagnosticPort, dashboard, manage, hostDirectory).unref()
       if (reported) console.info('[magpie-usage-hub]', '{"status":"diagnostic_ready"}')
     } catch (error) {
       if (!reported) {

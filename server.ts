@@ -18,7 +18,7 @@ export default {
         const stateDirectory = join(input.directory, 'magpie-usage-hub')
         void runCenter(stateDirectory, settings, diagnostics).then(services => {
           if (diagnostics.getStatus().failure?.code === 'center_owner_mismatch') return
-          startDiagnostics(diagnostics, services?.dashboard, services?.manage)
+          startDiagnostics(diagnostics, services?.dashboard, services?.manage, input.directory)
         })
         return {}
       }

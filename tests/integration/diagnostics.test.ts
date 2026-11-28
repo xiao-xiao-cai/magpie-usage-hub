@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test'
+import { mkdtemp, rmdir, unlink } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createDiagnostics, serveDiagnostics } from '../../src/diagnostics.ts'
 import { requestDirect } from '../../src/gateway/direct.ts'
 
@@ -34,7 +37,7 @@ test('loopback status only reports migration and ready diagnostics and rejects f
     expect(styles.status).toBe(200)
     expect(styles.headers.get('content-type')).toContain('text/css')
     expect(await styles.text()).toBe(await Bun.file(new URL('../../page/shared.css', import.meta.url)).text())
-    for (const path of ['dashboard/', 'api/usage', 'api/usage/rows', 'api/sources', 'push/center.sqlite']) {
+    for (const path of ['dashboard/', 'api/usage', 'api/usage/rows', 'api/usage-display', 'api/sources', 'push/center.sqlite']) {
       expect((await fetch(new URL(path, server.url))).status).toBe(404)
     }
   } finally {
@@ -44,12 +47,14 @@ test('loopback status only reports migration and ready diagnostics and rejects f
 
 test('the center dashboard serves relative assets and read-only usage on loopback', async () => {
   const queried: string[] = []
+  const hostDirectory = await mkdtemp(join(tmpdir(), 'usage-hub-display-'))
+  const settingsPath = join(hostDirectory, 'settings.json')
   const server = serveDiagnostics(createDiagnostics(revision), 0, async url => {
     const period = url.searchParams.get('period')
     queried.push(`${url.pathname}:${period}`)
     if (period === 'fail') throw new Error('fixture private error')
     return Response.json({ period })
-  })
+  }, undefined, hostDirectory)
   function read(path: URL, init: Partial<Parameters<typeof requestDirect>[1]> = {}) {
     return requestDirect(path, { method: 'GET', ...init }, AbortSignal.timeout(1_000))
   }
@@ -78,7 +83,8 @@ test('the center dashboard serves relative assets and read-only usage on loopbac
     const authorized = { Origin: 'null', 'X-Magpie-Usage-Query': token }
     const api = new URL('../api/usage?period=7d', dashboard)
     const details = new URL('../api/usage/rows?period=7d', dashboard)
-    for (const endpoint of [api, details]) {
+    const display = new URL('../api/usage-display', dashboard)
+    for (const endpoint of [api, details, display]) {
       const preflight = await fetch(endpoint, { method: 'OPTIONS', headers: { Origin: 'null' } })
       expect(preflight.status).toBe(204)
       expect(preflight.headers.get('access-control-allow-headers')).toBe('X-Magpie-Usage-Query')
@@ -90,6 +96,13 @@ test('the center dashboard serves relative assets and read-only usage on loopbac
     expect(response.headers.get('cache-control')).toBe('no-store')
     expect(await response.json()).toEqual({ period: '7d' })
     expect((await read(details, { headers: authorized })).status).toBe(200)
+    expect(await (await read(display, { headers: authorized })).json()).toEqual({ chineseUnits: false })
+    await Bun.write(settingsPath, JSON.stringify({ chineseUnits: true, unrelated: 'fixture private setting' }))
+    expect(await (await read(display, { headers: authorized })).json()).toEqual({ chineseUnits: true })
+    await Bun.write(settingsPath, JSON.stringify({ chineseUnits: false }))
+    expect(await (await read(display, { headers: authorized })).json()).toEqual({ chineseUnits: false })
+    await Bun.write(settingsPath, '{"chineseUnits":"true"}')
+    expect(await (await read(display, { headers: authorized })).json()).toEqual({ chineseUnits: null })
     const post = await read(api, { method: 'POST' })
     expect(post.status).toBe(405)
     expect(post.headers.get('allow')).toBe('GET')
@@ -103,6 +116,8 @@ test('the center dashboard serves relative assets and read-only usage on loopbac
     expect(queried).toEqual(['/api/usage:7d', '/api/usage/rows:7d', '/api/usage:fail'])
   } finally {
     await server.stop(true)
+    await unlink(settingsPath).catch(() => {})
+    await rmdir(hostDirectory)
   }
 })
 

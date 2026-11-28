@@ -28,6 +28,7 @@
       "file": "page/index.html",
       "service": { "port": 3493 }
     },
+    "permissions": ["usage:day"],
     "options": {}
   },
   "scripts": {

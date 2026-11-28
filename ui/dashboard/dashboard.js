@@ -1,16 +1,13 @@
 const byId = id => document.getElementById(id)
 const queryToken = document.querySelector('meta[name="usage-query-token"]')?.content
-const number = new Intl.NumberFormat('zh-CN')
-const shortNumber = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
-const dollars = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 10 })
-const metricNames = { tokens: 'Token', calls: '次', cost: 'USD' }
+const host = window.usageHubHost
+let number = new Intl.NumberFormat('zh-CN')
 const viaNames = { through: '网关', direct: '原生本机会话', session: 'OTLP 会话' }
 const callsNotes = { through: '本机按原生请求，OTLP 按网关尝试', conversation: '本机按原生会话请求，OTLP 按会话生成', all: '全部分项，同次业务调用可能重叠' }
 const scopeNames = { through: '网关', conversation: '会话', all: '全部分项' }
 const periods = ['today', '7d', '30d', 'custom']
-const metrics = Object.keys(metricNames)
 const metricLabels = { tokens: 'Token', calls: '次数', cost: '已计价费用' }
-const percent = new Intl.NumberFormat('zh-CN', { style: 'percent', maximumFractionDigits: 1 })
+const metrics = Object.keys(metricLabels)
 const svgNamespace = 'http://www.w3.org/2000/svg'
 const urlState = new URLSearchParams(usageHubOptions.dashboardSearch(location.search))
 const state = {
@@ -79,9 +76,42 @@ function cell(row, value, heading = false) {
 }
 
 function note(parent, text) { parent.append(element('small', text, 'detail-meta')) }
-function pair(left, right) { return `${number.format(left)} / ${number.format(right)}` }
+function pair(left, right, format = compactCount) { return `${format(left)} / ${format(right)}` }
 function tokens(totals) { return totals.input + totals.output }
-function cost(value) { return value > 0 && value < 1e-10 ? '<$0.0000000001' : `$${dollars.format(value)}` }
+
+function compactCount(value) {
+  const { chineseUnits, lang } = host.usageDisplay
+  if (chineseUnits && (lang === 'zh' || lang === 'zh-TW')) {
+    if (value >= 1e8) return `${Number((value / 1e8).toFixed(2))} ${lang === 'zh-TW' ? '億' : '亿'}`
+    if (value >= 1e4) return `${Number((value / 1e4).toFixed(1))} ${lang === 'zh-TW' ? '萬' : '万'}`
+    return String(value)
+  }
+  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`
+  if (value >= 1e7) return `${Math.round(value / 1e6)}M`
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`
+  if (value >= 1e5) return `${Math.round(value / 1e3)}K`
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`
+  return String(value)
+}
+
+function cost(value, unpriced = 0, axis = false) {
+  if (value === null || (value === 0 && unpriced)) return '—'
+  const { rate } = host.usageDisplay
+  const amount = value * (rate || 1)
+  const sign = rate ? '¥' : '$'
+  if (axis) return sign + amount.toFixed(amount >= 10 ? 0 : amount >= 1 ? 1 : 2)
+  const digits = amount >= 1 ? 2 : amount > 0 && amount < 1e-3 ? 1 - Math.floor(Math.log10(amount)) : 3
+  const text = digits > 100 ? amount.toExponential(1) : amount.toFixed(digits)
+  return sign + text
+}
+
+function duration(value) {
+  if (!Number.isFinite(value) || value <= 0) return '—'
+  const milliseconds = Math.round(value)
+  return milliseconds < 1000 ? `${milliseconds} 毫秒` : `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)} 秒`
+}
+
+function unpricedText(count) { return `缺价 ${number.format(count)} 条` }
 
 function createTimeFormats(timeZone) {
   const format = options => new Intl.DateTimeFormat('zh-CN', { timeZone, ...options })
@@ -104,14 +134,35 @@ function formatRange(from, to) {
   return `${dateLabel(start)} ${clockLabel(start)} – ${endDate}${clockLabel(end)}`
 }
 
-function compactValue(node, value, label) {
-  node.textContent = value === null ? '—' : shortNumber.format(value)
-  const exact = `${label} ${value === null ? '—' : number.format(value)}`
-  node.tabIndex = value === null ? -1 : 0
-  node.setAttribute('class', 'exact-value')
-  node.setAttribute('role', 'group')
+function exactValue(node, exact, focusable = true) {
+  node.classList.add('exact-value')
+  node.tabIndex = 0
   node.setAttribute('data-exact', exact)
+  if (!focusable) return
+  node.setAttribute('role', 'group')
   node.setAttribute('aria-label', exact)
+}
+
+function showValue(node, text, exact) {
+  node.textContent = text
+  if (exact) exactValue(node, exact)
+  else {
+    node.tabIndex = -1
+    node.classList.remove('exact-value')
+    node.removeAttribute('data-exact')
+    node.removeAttribute('role')
+    node.removeAttribute('aria-label')
+  }
+}
+
+function compactValue(node, value, label, format = compactCount) {
+  showValue(node, value === null ? '—' : format(value), value === null ? '' : `${label} ${number.format(value)}`)
+}
+
+function numericNode(tag, value, exact, label) {
+  const node = element(tag, value)
+  if (value !== exact) exactValue(node, `${label} ${exact}`)
+  return node
 }
 
 function appendTime(parent, value, today) {
@@ -201,7 +252,7 @@ function metricShare(totals, denominator, published = true) {
   bar.min = 0
   bar.max = 1
   bar.value = ratio ?? 0
-  share.append(bar, element('span', ratio === null ? '—' : percent.format(ratio)))
+  share.append(bar, element('span', ratio === null ? '—' : `${Math.round(100 * ratio)}%`))
   return share
 }
 
@@ -212,10 +263,10 @@ function sourceCard(source, denominator) {
   const totals = source.totals
   const amount = element('strong', source.hasPublishedData ? metricText(totals) : '—', 'source-value')
   const secondaryMetrics = [
-    ...(state.metric === 'tokens' ? [] : [`${number.format(tokens(totals))} Token`]),
-    ...(state.metric === 'calls' ? [] : [`${number.format(totals.calls)} 次`]),
-    ...(state.metric === 'cost' ? [] : [`${cost(totals.cost)} 已计价`]),
-    ...(totals.unpriced ? [`缺价 ${number.format(totals.unpriced)} 条`] : []),
+    ...(state.metric === 'tokens' ? [] : [`${compactCount(tokens(totals))} Token`]),
+    ...(state.metric === 'calls' ? [] : [`${compactCount(totals.calls)} 次`]),
+    ...(state.metric === 'cost' ? [] : [`${cost(totals.cost, totals.unpriced)} 已计价`]),
+    ...(totals.unpriced ? [unpricedText(totals.unpriced)] : []),
   ]
   const secondary = element('span', source.hasPublishedData ? secondaryMetrics.join(' · ') : '用量准备中', 'detail-meta source-meta')
   const sparkline = element('span', undefined, 'source-sparkline')
@@ -237,14 +288,23 @@ function sourceCard(source, denominator) {
   share.id = `source-share-${source.id}`
   button.type = 'button'
   button.setAttribute('aria-labelledby', name.id)
-  button.setAttribute('aria-describedby', `${amount.id} ${secondary.id} ${share.id}`)
+  const descriptions = [amount.id, secondary.id, share.id]
   button.setAttribute('aria-pressed', String(state.sourceId === source.id))
+  item.append(button)
+  if (source.hasPublishedData && [tokens(totals), totals.calls].some(value => compactCount(value) !== String(value))) {
+    const exact = `${number.format(tokens(totals))} Token · ${number.format(totals.calls)} 次`
+    exactValue(button, exact, false)
+    const exactDescription = element('span', exact, 'sr-only')
+    exactDescription.id = `source-exact-${source.id}`
+    descriptions.push(exactDescription.id)
+    item.append(exactDescription)
+  }
+  button.setAttribute('aria-describedby', descriptions.join(' '))
   button.addEventListener('click', () => {
     selectSource(state.sourceId === source.id ? '' : source.id)
     byId(button.id)?.focus({ preventScroll: true })
   })
   button.append(name, amount, secondary, sparkline, share)
-  item.append(button)
   return item
 }
 
@@ -281,17 +341,17 @@ function modelRow(item, denominator, index) {
   const totals = item.totals
   const details = element('dl', undefined, 'model-details')
   details.id = `model-fields-${index}`
-  for (const [label, value] of [
-    ['输入 / 输出', pair(totals.input, totals.output)],
-    ['缓存读 / 写', pair(totals.cacheRead, totals.cacheWrite)],
+  for (const [label, value, exact = value] of [
+    ['输入 / 输出', pair(totals.input, totals.output), pair(totals.input, totals.output, number.format)],
+    ['缓存读 / 写', pair(totals.cacheRead, totals.cacheWrite), pair(totals.cacheRead, totals.cacheWrite, number.format)],
     ['缓存未知', number.format(totals.cacheUnknownCalls)],
-    ['推理 Token', number.format(totals.reasoning)],
-    ['次数', number.format(totals.calls)],
-    ['已计价费用', cost(totals.cost)],
+    ['推理 Token', compactCount(totals.reasoning), number.format(totals.reasoning)],
+    ['次数', compactCount(totals.calls), number.format(totals.calls)],
+    ['已计价费用', cost(totals.cost, totals.unpriced)],
     ['缺价记录', number.format(totals.unpriced)],
   ]) {
     const field = element('div')
-    field.append(element('dt', label), element('dd', value))
+    field.append(element('dt', label), numericNode('dd', value, exact, label))
     details.append(field)
   }
   const toggle = element('button', '细项', 'quiet list-action')
@@ -306,14 +366,19 @@ function modelRow(item, denominator, index) {
   }
   expand(expandedModels.has(item.model))
   toggle.addEventListener('click', () => expand(details.hidden))
-  const amount = element('span', metricText(totals), 'list-number')
-  if (state.metric === 'cost' && totals.unpriced) note(amount, `缺价 ${number.format(totals.unpriced)} 条`)
+  const amount = element('span', undefined, 'list-number')
+  const visible = metricText(totals)
+  amount.append(numericNode('span', visible, metricText(totals, number.format), metricLabels[state.metric]))
+  if (state.metric === 'cost' && totals.unpriced) note(amount, unpricedText(totals.unpriced))
   row.append(link, amount, metricShare(totals, denominator), toggle, details)
   return row
 }
 
 function metricValue(totals) { return state.metric === 'tokens' ? tokens(totals) : totals[state.metric] }
-function metricText(totals) { return state.metric === 'cost' ? cost(totals.cost) : `${number.format(metricValue(totals))} ${metricNames[state.metric]}` }
+function metricText(totals, format = compactCount) {
+  if (state.metric === 'cost') return cost(totals.cost, totals.unpriced)
+  return `${format(metricValue(totals))} ${state.metric === 'tokens' ? 'Token' : '次'}`
+}
 
 function inspectPoint(index) {
   if (!chartPoints.length) return
@@ -321,13 +386,15 @@ function inspectPoint(index) {
   const point = chartPoints[selectedPoint]
   const totals = point.totals
   const time = formatRange(point.from, point.to)
-  const values = `${number.format(tokens(totals))} Token · 输入 / 输出 ${pair(totals.input, totals.output)} · ${number.format(totals.calls)} 次 · ${cost(totals.cost)} 已计价 · 缺价 ${number.format(totals.unpriced)} 条`
+  const values = format => `${format(tokens(totals))} Token · 输入 ${format(totals.input)} · 输出 ${format(totals.output)} · ${format(totals.calls)} 次 · ${cost(totals.cost, totals.unpriced)} 已计价 · ${unpricedText(totals.unpriced)}`
   byId('point-time').textContent = time
-  byId('point-value').textContent = values
+  const pointText = values(compactCount)
+  const exactPoint = values(number.format)
+  showValue(byId('point-value'), pointText, pointText === exactPoint ? '' : exactPoint)
   const horizontal = chartPoints.length === 1 ? 500 : selectedPoint * 1000 / (chartPoints.length - 1)
   byId('point-guide').setAttribute('d', `M${horizontal} 4V120`)
   byId('plot').setAttribute('aria-valuenow', String(selectedPoint + 1))
-  byId('plot').setAttribute('aria-valuetext', `${time} · ${values}`)
+  byId('plot').setAttribute('aria-valuetext', `${time} · ${exactPoint}`)
 }
 
 function openBucketDetails() {
@@ -357,7 +424,7 @@ function renderChart() {
   byId('trend-area').setAttribute('d', values.length > 1 ? `${line}L1000 120H0Z` : '')
   byId('plot').setAttribute('aria-valuemax', String(values.length))
   const ticks = max ? [max, max / 2, 0] : [0]
-  byId('y-axis').replaceChildren(...ticks.map(value => element('span', state.metric === 'cost' ? cost(value) : shortNumber.format(value))))
+  byId('y-axis').replaceChildren(...ticks.map(value => element('span', state.metric === 'cost' ? cost(value, 0, true) : compactCount(Math.round(value)))))
   const indices = [...new Set([0, Math.floor((values.length - 1) / 2), values.length - 1])]
   const multiDay = timestamp(usage.range.to) - timestamp(usage.range.from) > 86_400_000
   byId('x-axis').replaceChildren(...indices.map(index => {
@@ -392,9 +459,9 @@ function renderBilling() {
     if (item) addTotals(totals, item.totals)
   }
   byId('billing').hidden = state.view === 'details' && Boolean(state.detailFrom)
-  byId('billed').textContent = sources.some(source => source.hasPublishedData) ? `${cost(totals.cost)} USD` : '—'
+  byId('billed').textContent = sources.some(source => source.hasPublishedData) ? cost(totals.cost, totals.unpriced) : '—'
   byId('unpriced').hidden = !totals.unpriced
-  byId('unpriced').textContent = `缺价 ${number.format(totals.unpriced)} 条`
+  byId('unpriced').textContent = unpricedText(totals.unpriced)
 }
 
 function render() {
@@ -406,11 +473,17 @@ function render() {
   byId('register-banner').hidden = !(usage.sources.length === 1 && usage.sources[0].id === 'local')
   renderBilling()
   compactValue(byId('kpi-tokens'), published ? tokens(totals) : null, 'Token')
-  byId('token-note').textContent = published ? `输入 ${number.format(totals.input)} / 输出 ${number.format(totals.output)}` : '输入 — / 输出 —'
+  const tokenNote = format => published ? `输入 ${format(totals.input)} · 输出 ${format(totals.output)}` : '输入 — · 输出 —'
+  const tokenText = tokenNote(compactCount)
+  const exactTokens = tokenNote(number.format)
+  showValue(byId('token-note'), tokenText, tokenText === exactTokens ? '' : exactTokens)
   compactValue(byId('kpi-cache'), published ? totals.cacheRead : null, '缓存读取')
-  byId('cache-note').textContent = published ? `缓存写入 ${number.format(totals.cacheWrite)}${totals.cacheUnknownCalls ? ` · ${number.format(totals.cacheUnknownCalls)} 条缓存未知` : ''}` : '缓存写入 —'
+  const cacheNote = format => published ? `缓存写入 ${format(totals.cacheWrite)}${totals.cacheUnknownCalls ? ` · ${number.format(totals.cacheUnknownCalls)} 条缓存未知` : ''}` : '缓存写入 —'
+  const cacheText = cacheNote(compactCount)
+  const exactCache = cacheNote(number.format)
+  showValue(byId('cache-note'), cacheText, cacheText === exactCache ? '' : exactCache)
   compactValue(byId('kpi-reasoning'), published ? totals.reasoning : null, '推理 Token')
-  compactValue(byId('kpi-calls'), published ? totals.calls : null, '计量次数')
+  compactValue(byId('kpi-calls'), published ? totals.calls : null, '计量次数', String)
   byId('calls-note').textContent = callsNotes[usage.via]
   byId('range-label').textContent = `${scopeNames[usage.via]} · ${formatRange(usage.range.from, usage.range.to)}`
   const readAt = byId('read-at')
@@ -445,13 +518,17 @@ function detailRow(item, today) {
   cell(row, item.model || '未标注模型')
   const via = cell(row, viaNames[item.via] ?? '未标注分项')
   if (item.handedOn) note(via, '中间尝试')
-  cell(row, pair(item.input, item.output))
-  const cache = cell(row, pair(item.cacheRead, item.cacheWrite))
+  cell(row).append(numericNode('span', pair(item.input, item.output), pair(item.input, item.output, number.format), '输入 / 输出'))
+  const cache = item.cacheUnknown ? cell(row, '— / —') : cell(row)
   if (item.cacheUnknown) note(cache, '缓存计数未知')
-  cell(row, number.format(item.reasoning))
-  cell(row, item.cost !== null && (primaryUsage || isOtlp) ? cost(item.cost) : hasUsage ? '缺价' : '—')
+  else cache.append(numericNode('span', pair(item.cacheRead, item.cacheWrite), pair(item.cacheRead, item.cacheWrite, number.format), '缓存读 / 写'))
+  cell(row).append(numericNode('span', compactCount(item.reasoning), number.format(item.reasoning), '推理 Token'))
+  const price = item.cost !== null && (primaryUsage || isOtlp) ? item.cost : null
+  const priceCell = cell(row, cost(price))
+  if (price === null && hasUsage) priceCell.title = '缺价'
   cell(row, item.status == null ? '—' : String(item.status))
-  cell(row, item.durationMs == null ? '—' : number.format(item.durationMs))
+  const elapsed = cell(row, duration(item.durationMs))
+  if (Number.isFinite(item.durationMs) && item.durationMs > 0) elapsed.title = `${number.format(item.durationMs)} 毫秒`
   return row
 }
 
@@ -475,6 +552,13 @@ function resetRows() {
   rowsControls()
 }
 
+function renderDetails() {
+  if (!pageState?.loaded) return
+  const today = timeFormats.date.format(new Date())
+  byId('detail-rows').replaceChildren(...pageState.rows.map(item => detailRow(item, today)))
+  byId('current-page').textContent = `第 ${number.format(pageState.index + 1)} 页`
+}
+
 async function loadRows(index) {
   if (!matchesSummary() || state.view !== 'details' || activeRequest || rowsRequest) return
   const params = new URLSearchParams({ from: state.detailFrom || usage.range.from, to: state.detailTo || usage.range.to })
@@ -491,15 +575,14 @@ async function loadRows(index) {
   try {
     const details = await query('usage/rows', params, controller.signal)
     if (controller !== rowsRequest) return
-    const today = timeFormats.date.format(new Date())
-    byId('detail-rows').replaceChildren(...details.rows.map(item => detailRow(item, today)))
+    pageState.rows = details.rows
+    pageState.index = index
+    pageState.loaded = true
+    renderDetails()
     byId('rows-table').hidden = !details.rows.length
     byId('rows-notice').textContent = details.rows.length ? '' : visibleSources().some(source => source.hasPublishedData) ? '此时段暂无用量' : '用量准备中'
-    byId('current-page').textContent = `第 ${number.format(index + 1)} 页`
-    pageState.index = index
     pageState.next = details.nextPage
     pageState.tokens[index + 1] = details.nextPage
-    pageState.loaded = true
   } catch (error) {
     if (controller !== rowsRequest) return
     if (error.message === 'invalid_page' && pageState.tokens[index]) {
@@ -661,6 +744,17 @@ for (const id of ['reload', 'rows-reload']) byId(id).addEventListener('click', (
 byId('rows-retry').addEventListener('click', () => { void loadRows(pageState.retryIndex) })
 byId('previous-rows').addEventListener('click', () => { if (pageState.index) void loadRows(pageState.index - 1) })
 byId('next-rows').addEventListener('click', () => { if (pageState.next) void loadRows(pageState.index + 1) })
+function applyDisplayPreferences() {
+  const locale = { zh: 'zh-CN', 'zh-TW': 'zh-TW', ja: 'ja-JP', de: 'de-DE' }[host.usageDisplay.lang] || 'en'
+  number = new Intl.NumberFormat(locale)
+  if (!matchesSummary()) return
+  const focusId = document.activeElement?.id
+  render()
+  renderDetails()
+  if (focusId && document.activeElement?.id !== focusId) byId(focusId)?.focus({ preventScroll: true })
+}
+window.addEventListener('usage-display-change', applyDisplayPreferences)
+applyDisplayPreferences()
 byId('custom-range').hidden = state.period !== 'custom'
 byId('period-custom').setAttribute('aria-expanded', String(state.period === 'custom'))
 updateNavigation()

@@ -24,6 +24,8 @@
 .exact-value:is(:hover, :focus-visible) { z-index: 2; }
 .exact-value:is(:hover, :focus-visible)::after { content: attr(data-exact); position: absolute; inset-block-start: 100%; inset-inline-start: 0; width: max-content; max-width: 12rem; border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; background: var(--card); color: var(--fg); box-shadow: 0 2px 8px #0002; font-size: 11px; font-weight: 500; line-height: 1.4; letter-spacing: normal; overflow-wrap: anywhere; pointer-events: none; }
 .kpi:last-child .exact-value::after { inset-inline-start: auto; inset-inline-end: 0; }
+.list-number .exact-value::after, .data-table .exact-value::after { inset-inline-start: auto; inset-inline-end: 0; }
+.data-table .exact-value::after { inset-block-start: auto; inset-block-end: 100%; }
 .usage-empty { color: var(--muted); font-size: 12px; }
 .kpi h2 { margin: 3px 0 0; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
 .kpi strong { font-size: 20px; font-weight: 600; line-height: 1.15; letter-spacing: -.01em; overflow-wrap: anywhere; }
@@ -59,6 +61,7 @@
 .source-card[aria-pressed="true"] { border-color: var(--accent); }
 .source-card[aria-pressed="true"] .source-name { color: var(--accent); }
 .source-card:focus-visible { outline-offset: -4px; }
+.source-card.exact-value { width: 100%; }
 .source-name { grid-area: name; font-weight: 600; overflow-wrap: anywhere; }
 .source-value { grid-area: value; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 .source-meta { grid-area: meta; }

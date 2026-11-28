@@ -268,7 +268,7 @@ function sourceFacts(source) {
       ['最近确认页', formatTime(source.lastPageAt) || '暂无'])
     const reason = recoveryText.get(source.recoveryReason)
     if (reason) entries.push(['恢复原因', reason])
-    if (source.gap?.missingRows > 0) entries.push(['上次重建缺口', `${source.gap.missingRows} 条旧记录`])
+    if (source.gap?.missingRows > 0) entries.push(['上次重建缺口', `${source.gap.missingRows.toLocaleString('zh-CN')} 条旧记录`])
   }
   return entries.flatMap(([label, value]) => ['dt', 'dd'].map((tag, index) => {
     const field = document.createElement(tag)
