@@ -36,6 +36,73 @@ const settings = { enabled: true, centerGatewayUrl: 'http://127.0.0.1:3425/',
   ingestHost: '127.0.0.1', ingestPort: 3494, timeZone: 'Asia/Shanghai', requestTimeoutSec: 30,
 }
 const original = { ...settings, collectionMode: 'otlp', role: 'center', configRevision: revisionOne }
+const configuration = readFileSync(new URL('../../page/configuration.js', import.meta.url), 'utf8')
+
+async function settingsPage() {
+  class Control extends EventTarget {
+    checked = false
+    disabled = false
+    hidden = false
+    href = ''
+    value = ''
+    textContent = ''
+    attributes = new Map<string, string>()
+    get valueAsNumber() { return this.value === '' ? NaN : Number(this.value) }
+    setAttribute(name: string, value: string) { this.attributes.set(name, value) }
+    removeAttribute(name: string) { this.attributes.delete(name) }
+    replaceChildren() {}
+    toggleAttribute() {}
+  }
+  const controls = new Map<string, Control>()
+  function control(id: string) {
+    if (!controls.has(id)) controls.set(id, new Control())
+    return controls.get(id)!
+  }
+  let stored: Options = { ...original }
+  const writes: Options[] = []
+  const writeTimes: number[] = []
+  let beforeWrite: (() => Promise<unknown>) | undefined
+  let beforeRead: (() => Promise<unknown>) | undefined
+  const navigations: string[] = []
+  const service = 'https://usage.example.com/plugins/fixture/_magpie/service/'
+  const back = new URLSearchParams({ back: '?view=details&period=30d&sourceId=local&model=&token=fixture' })
+  const timers = new Map<number, () => void>()
+  let nextTimer = 0
+  let clock = 0
+  runInNewContext(configuration, {
+    usageHubOptions: page,
+    document: { getElementById: control, createElement: () => new Control() },
+    window: {
+      location: { href: `https://usage.example.com/plugins/fixture/settings.html?${back}`, assign: (url: string) => navigations.push(url) },
+      magpie: { service, options: {
+        async get() { await beforeRead?.(); return { ...stored } },
+        async set(next: Options) { writes.push(next); writeTimes.push(clock); await beforeWrite?.(); stored = next },
+      } },
+    },
+    Event, URL, performance: { now: () => clock },
+    setTimeout(callback: () => void, delay: number) {
+      const id = ++nextTimer
+      if (delay === 1500) timers.set(id, callback)
+      if (delay <= 1000) queueMicrotask(() => { clock += delay; callback() })
+      return id
+    },
+    clearTimeout(id: number) { timers.delete(id) },
+  })
+  await Bun.sleep(0)
+  return {
+    control, writes, writeTimes, navigations,
+    get stored() { return stored },
+    update(next: Options) { stored = { ...stored, ...next } },
+    onWrite(handler?: () => Promise<unknown>) { beforeWrite = handler },
+    onRead(handler?: () => Promise<unknown>) { beforeRead = handler },
+    expireToast() { for (const callback of timers.values()) callback(); timers.clear() },
+    edit(id: string, value: string, commit = true) {
+      control(id).value = value
+      control(id).dispatchEvent(new Event('input'))
+      if (commit) control(id).dispatchEvent(new Event('change'))
+    },
+  }
+}
 
 function harness(initial: Options = original) {
   let stored: Options = { ...initial }
@@ -171,59 +238,93 @@ describe('plugin Options page', () => {
   })
 
   test('retains a center address draft when another window changes the timeout', async () => {
-    class Control extends EventTarget {
-      checked = false
-      disabled = false
-      hidden = false
-      href = ''
-      value = ''
-      textContent = ''
-      get valueAsNumber() { return Number(this.value) }
-      setAttribute() {}
-      removeAttribute() {}
-      replaceChildren() {}
-      toggleAttribute() {}
-    }
-    const controls = new Map<string, Control>()
-    function control(id: string) {
-      if (!controls.has(id)) controls.set(id, new Control())
-      return controls.get(id)!
-    }
-    let stored: Options = { ...original }
-    const service = 'https://usage.example.com/plugins/fixture/_magpie/service/'
-    const back = new URLSearchParams({ back: '?view=details&period=30d&sourceId=local&model=&token=fixture' })
-    runInNewContext(await Bun.file(new URL('../../page/configuration.js', import.meta.url)).text(), {
-      usageHubOptions: page,
-      document: { getElementById: control, createElement: () => new Control() },
-      window: { location: { href: `https://usage.example.com/plugins/fixture/settings.html?${back}` },
-        magpie: { service, options: { async get() { return { ...stored } }, async set(next: Options) { stored = next } } },
-      },
-      Event, setTimeout, clearTimeout, URL,
-    })
-    await Bun.sleep(0)
+    const ui = await settingsPage()
+    const { control } = ui
     for (const [id, tab] of [['return-dashboard', 'dashboard'], ['sources-link', 'sources'], ['diagnostic-link', 'status']]) {
       const url = new URL(control(id).href)
       expect(url.searchParams.get('to')).toBe(tab)
       expect(url.searchParams.get('back')).toBe('?view=details&period=30d&sourceId=local&model=')
     }
-    control('centerGatewayUrl').value = 'http://127.0.0.1:3456/'
-    control('centerGatewayUrl').dispatchEvent(new Event('input'))
-    stored = { ...stored, requestTimeoutSec: 60, configRevision: page.createId() }
-    control('save-settings').dispatchEvent(new Event('click', { cancelable: true }))
+    ui.update({ requestTimeoutSec: 60, configRevision: page.createId() })
+    ui.edit('centerGatewayUrl', 'http://127.0.0.1:3456/')
     await Bun.sleep(0)
     expect(control('rebase-options').hidden).toBe(false)
-    expect(stored.centerGatewayUrl).toBe(original.centerGatewayUrl)
+    expect(ui.stored.centerGatewayUrl).toBe(original.centerGatewayUrl)
+    expect(control('settings-saved').textContent).toBe('')
     control('rebase-options').dispatchEvent(new Event('click'))
     expect(control('centerGatewayUrl').value).toBe('http://127.0.0.1:3456/')
     expect(control('requestTimeoutSec').value).toBe('60')
-    control('save-settings').dispatchEvent(new Event('click', { cancelable: true }))
+    control('retry-save').dispatchEvent(new Event('click'))
     await Bun.sleep(0)
-    expect(stored).toMatchObject({ centerGatewayUrl: 'http://127.0.0.1:3456/', requestTimeoutSec: 60 })
-    control('centerGatewayUrl').value = ''
-    control('centerGatewayUrl').dispatchEvent(new Event('input'))
-    control('save-settings').dispatchEvent(new Event('click', { cancelable: true }))
+    expect(ui.stored).toMatchObject({ centerGatewayUrl: 'http://127.0.0.1:3456/', requestTimeoutSec: 60 })
+    ui.edit('centerGatewayUrl', '')
     await Bun.sleep(0)
-    expect(stored.centerGatewayUrl).toBeUndefined()
+    expect(ui.stored.centerGatewayUrl).toBeUndefined()
+  })
+
+  test('commits validated edits in order and keeps later typing out of a queued write', async () => {
+    const ui = await settingsPage()
+    const { control } = ui
+    const gate = Promise.withResolvers<void>()
+    ui.edit('requestTimeoutSec', '')
+    expect(control('requestTimeoutSec').attributes.get('aria-invalid')).toBe('true')
+    expect(ui.writes).toHaveLength(0)
+    ui.onWrite(() => gate.promise)
+    ui.edit('requestTimeoutSec', '31', false)
+    await Bun.sleep(0)
+    expect(ui.writes).toHaveLength(0)
+    control('requestTimeoutSec').dispatchEvent(new Event('change'))
+    await Bun.sleep(0)
+    ui.edit('timeZone', 'UTC')
+    ui.edit('timeZone', 'Asia/Tokyo', false)
+    expect(control('revision-value').textContent).toBe(revisionOne)
+    expect(control('settings-saved').textContent).toBe('')
+    expect(ui.writes).toHaveLength(1)
+    gate.resolve()
+    await Bun.sleep(0)
+    expect(ui.writes).toHaveLength(2)
+    expect(ui.stored).toMatchObject({ requestTimeoutSec: 31, timeZone: 'UTC' })
+    expect(control('timeZone').value).toBe('Asia/Tokyo')
+    control('timeZone').dispatchEvent(new Event('change'))
+    control('timeZone').dispatchEvent(new Event('change'))
+    const navigate = new Event('click', { cancelable: true })
+    control('diagnostic-link').dispatchEvent(navigate)
+    expect(navigate.defaultPrevented).toBe(true)
+    expect(ui.navigations).toHaveLength(0)
+    await Bun.sleep(0)
+    expect(ui.writes).toHaveLength(3)
+    expect(ui.writeTimes).toEqual([0, 1000, 2000])
+    expect(ui.stored.timeZone).toBe('Asia/Tokyo')
+    expect(control('revision-value').textContent).toBe(ui.stored.configRevision as string)
+    expect(control('settings-message').textContent).toBe('')
+    expect(control('settings-saved').textContent).toBe('已保存')
+    expect(ui.navigations).toEqual([control('diagnostic-link').href])
+    expect(ui.navigations[0]).toContain(`revision=${ui.stored.configRevision}`)
+    ui.expireToast()
+    expect(control('settings-saved').textContent).toBe('')
+  })
+
+  test('keeps failed drafts and only confirms a revision after a successful readback', async () => {
+    const ui = await settingsPage()
+    const { control } = ui
+    ui.onWrite(async () => { throw new Error('fixture write failure') })
+    ui.edit('requestTimeoutSec', '31')
+    await Bun.sleep(0)
+    expect(control('retry-save').hidden).toBe(false)
+    expect(control('requestTimeoutSec').value).toBe('31')
+    expect(control('settings-saved').textContent).toBe('')
+    ui.onWrite(async () => ui.onRead(async () => { throw new Error('fixture readback failure') }))
+    control('retry-save').dispatchEvent(new Event('click'))
+    await Bun.sleep(0)
+    expect(control('reload-options').hidden).toBe(false)
+    expect(control('revision-value').textContent).toBe(revisionOne)
+    expect(control('settings-saved').textContent).toBe('')
+    ui.onRead()
+    control('reload-options').dispatchEvent(new Event('click'))
+    await Bun.sleep(0)
+    expect(ui.writes).toHaveLength(2)
+    expect(control('revision-value').textContent).toBe(ui.stored.configRevision as string)
+    expect(control('settings-saved').textContent).toBe('已保存')
   })
 
   test('retains the saved view after write rejection and mismatched readback', async () => {

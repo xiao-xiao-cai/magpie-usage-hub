@@ -12,72 +12,85 @@
   <script defer src="configuration.js"></script>
 </head>
 <body>
-  <main class="workspace" aria-label="中心设置">
+  <main class="workspace config-workspace" aria-label="中心设置">
     <header class="page-toolbar config-toolbar">
+      <nav class="config-nav" aria-label="配置页面"><a id="sources-link" class="quiet" hidden>来源管理</a><span id="settings-title" class="quiet" aria-current="page">中心设置</span><a id="diagnostic-link" class="quiet" hidden>运行诊断</a></nav>
       <a id="return-dashboard" class="quiet" hidden>返回用量看板</a>
-      <nav class="segmented" aria-label="配置页面"><a id="sources-link" hidden>来源管理</a><span aria-current="page">中心设置</span><a id="diagnostic-link" hidden>运行诊断</a></nav>
     </header>
 
     <section class="settings-content" aria-labelledby="settings-title">
-      <header class="toolbar settings-heading">
-        <h2 id="settings-title" class="section-heading">中心设置</h2>
-        <button id="reload-options" type="button">重新读取</button>
+      <p id="migration-guide" class="feedback" hidden>请核对设置后开启中心本机采集与用量看板。</p>
+      <header class="config-group-head settings-head">
+        <h2 id="collection-heading" class="config-group-title">本机采集</h2>
+        <div class="settings-meta">
+          <p id="settings-message" class="feedback" role="status">正在读取设置…</p>
+          <p id="settings-revision" class="revision" hidden>保存修订 <code id="revision-value"></code></p>
+        </div>
       </header>
-      <p id="migration-guide" class="feedback" hidden>请核对并保存中心设置。</p>
+      <div id="settings-recovery" hidden>
+        <ul id="options-difference" class="difference" hidden></ul>
+        <div class="config-actions">
+          <button id="retry-save" type="button" hidden>重试保存</button>
+          <button id="reload-options" type="button" hidden>重新读取</button>
+          <button id="rebase-options" type="button" hidden>载入最新设置并保留草稿</button>
+        </div>
+      </div>
       <form id="settings-form" novalidate>
         <fieldset id="settings-fields" disabled aria-labelledby="settings-title">
-          <section class="panel settings-group" aria-labelledby="collection-heading">
-            <h3 id="collection-heading" class="section-heading">本机采集</h3>
-            <label class="check-row settings-switch" for="enabled">
-              启用中心本机采集与用量看板
-              <input id="enabled" type="checkbox">
-            </label>
-            <div class="form-field settings-row">
-              <label for="centerGatewayUrl">中心本机网关</label>
-              <input id="centerGatewayUrl" type="url" placeholder="http://127.0.0.1:3425" autocomplete="off" spellcheck="false" aria-describedby="gateway-hint">
-              <small id="gateway-hint">留空使用中心宿主的回环网关。</small>
-            </div>
-            <div class="form-field settings-row">
-              <label for="requestTimeoutSec">本机网关请求超时（秒）</label>
-              <input id="requestTimeoutSec" type="number" min="1" max="120" step="1" value="30" required>
-            </div>
-          </section>
-          <section class="panel settings-group" aria-labelledby="receiver-heading">
-            <h3 id="receiver-heading" class="section-heading">远端接收</h3>
-            <label class="check-row settings-switch" for="receiverEnabled">启用其他来源的 OTLP 接收<input id="receiverEnabled" type="checkbox"></label>
-            <div class="form-field settings-row">
-              <label for="ingestHost">中心监听地址</label>
-              <input id="ingestHost" type="text" placeholder="127.0.0.1" autocomplete="off" spellcheck="false" aria-describedby="ingest-hint">
-              <small id="ingest-hint">默认监听回环。Docker 发布的接收端口应绑定宿主的 WireGuard 地址。</small>
-            </div>
-            <div class="form-field settings-row">
-              <label for="ingestPort">OTLP 接收端口</label>
-              <input id="ingestPort" type="number" min="1" max="65535" step="1" value="3494">
-            </div>
-            <div class="form-field settings-row">
-              <label for="publicEndpoint">设备可访问的接收地址</label>
-              <input id="publicEndpoint" type="url" placeholder="http://192.0.2.2:3494" autocomplete="off" spellcheck="false">
-              <small>填写来源设备使用的基础地址，供接入指引显示。</small>
+          <section class="config-group" aria-labelledby="collection-heading">
+            <div class="panel config-card">
+              <div class="config-row">
+                <span id="enabled-label">中心本机采集与用量看板</span>
+                <div class="segmented config-switch" role="radiogroup" aria-labelledby="enabled-label">
+                  <label><input id="enabled-off" class="sr-only" type="radio" name="enabled" checked><span>关闭</span></label>
+                  <label><input id="enabled" class="sr-only" type="radio" name="enabled"><span>开启</span></label>
+                </div>
+              </div>
+              <div class="form-field config-row">
+                <div><label for="centerGatewayUrl">中心本机网关</label><small id="gateway-hint">留空时使用中心宿主的回环网关。</small></div>
+                <input id="centerGatewayUrl" type="url" placeholder="http://127.0.0.1:3425" autocomplete="off" spellcheck="false" aria-describedby="gateway-hint">
+              </div>
+              <div class="form-field config-row">
+                <label for="requestTimeoutSec">本机网关请求超时（秒）</label>
+                <input id="requestTimeoutSec" type="number" min="1" max="120" step="1" value="30" required>
+              </div>
             </div>
           </section>
-          <section class="panel settings-group" aria-labelledby="display-heading">
-            <h3 id="display-heading" class="section-heading">看板显示</h3>
-            <div class="form-field settings-row">
+          <section class="config-group" aria-labelledby="receiver-heading">
+            <header class="config-group-head"><h2 id="receiver-heading" class="config-group-title">远端接收</h2></header>
+            <div class="panel config-card">
+              <div class="config-row">
+                <span id="receiverEnabled-label">接收其他来源的 OTLP 上报</span>
+                <div class="segmented config-switch" role="radiogroup" aria-labelledby="receiverEnabled-label">
+                  <label><input id="receiverEnabled-off" class="sr-only" type="radio" name="receiverEnabled" checked><span>关闭</span></label>
+                  <label><input id="receiverEnabled" class="sr-only" type="radio" name="receiverEnabled"><span>开启</span></label>
+                </div>
+              </div>
+              <div class="form-field config-row">
+                <div><label for="ingestHost">中心监听地址</label><small id="ingest-hint">默认监听回环。Docker 发布的接收端口应绑定宿主的 WireGuard 地址。</small></div>
+                <input id="ingestHost" class="config-input-short" type="text" placeholder="127.0.0.1" autocomplete="off" spellcheck="false" aria-describedby="ingest-hint">
+              </div>
+              <div class="form-field config-row">
+                <label for="ingestPort">OTLP 接收端口</label>
+                <input id="ingestPort" type="number" min="1" max="65535" step="1" value="3494">
+              </div>
+              <div class="form-field config-row">
+                <div><label for="publicEndpoint">设备可访问的接收地址</label><small id="endpoint-hint">填写来源设备使用的基础地址，供接入指引显示。</small></div>
+                <input id="publicEndpoint" type="url" placeholder="http://192.0.2.2:3494" autocomplete="off" spellcheck="false" aria-describedby="endpoint-hint">
+              </div>
+            </div>
+          </section>
+          <section class="config-group" aria-labelledby="display-heading">
+            <header class="config-group-head"><h2 id="display-heading" class="config-group-title">看板显示</h2></header>
+            <div class="panel config-card form-field config-row">
               <label for="timeZone">看板时区</label>
-              <input id="timeZone" type="text" placeholder="Asia/Shanghai" autocomplete="off" spellcheck="false">
+              <input id="timeZone" class="config-input-short" type="text" placeholder="Asia/Shanghai" autocomplete="off" spellcheck="false">
             </div>
           </section>
-          <div class="actions settings-actions">
-            <button type="submit" class="primary" id="save-settings">保存设置</button>
-            <button id="rebase-options" type="button" hidden>载入最新设置并保留草稿</button>
-            <a id="settings-diagnostics" class="quiet" hidden>查看运行诊断</a>
-          </div>
         </fieldset>
-        <p id="settings-message" class="feedback" role="status">正在读取设置…</p>
-        <ul id="options-difference" class="difference" hidden></ul>
-        <p id="settings-revision" class="revision" hidden>保存修订 <code id="revision-value"></code></p>
       </form>
     </section>
   </main>
+  <div id="settings-saved" role="status" aria-atomic="true"></div>
 </body>
 </html>

@@ -14,129 +14,146 @@
   <script defer src="sources.js"></script>
 </head>
 <body>
-  <main class="workspace" aria-label="来源管理">
+  <main class="workspace config-workspace" aria-label="来源管理">
     <header class="page-toolbar config-toolbar">
-      <a id="back-dashboard" class="quiet" href="../dashboard/">返回用量看板</a>
+      <nav id="config-nav" class="config-nav" aria-label="配置页面"><span class="quiet" aria-current="page">来源管理</span><a id="settings-link" class="quiet" href="../../../settings.html">中心设置</a><a id="status-link" class="quiet" href="../status/">运行诊断</a></nav>
       <button id="reset-source" class="quiet" type="button" hidden>‹ 返回来源列表</button>
-      <nav id="config-nav" class="segmented" aria-label="配置页面"><span aria-current="page">来源管理</span><a id="settings-link" href="../../../settings.html">中心设置</a><a id="status-link" href="../status/">运行诊断</a></nav>
+      <a id="back-dashboard" class="quiet" href="../dashboard/">返回用量看板</a>
     </header>
 
     <p id="sources-notice" class="notice" role="status">正在读取来源…</p>
     <p id="management-reentry" hidden><a id="resume-management" href="../?to=sources">重新打开来源管理</a></p>
-    <section id="sources-section" class="panel list-panel" aria-labelledby="sources-heading">
-      <header class="toolbar"><h2 id="sources-heading" class="section-heading">用量来源</h2><div class="controls"><button id="refresh-sources" type="button">刷新</button><button id="add-source" class="primary" type="button">添加设备</button></div></header>
-      <p id="sources-empty" class="muted" hidden>尚无已登记的来源。</p>
-      <ul id="sources-rows" class="source-list" role="list" aria-labelledby="sources-heading" hidden></ul>
+    <section id="sources-section" class="config-group" aria-labelledby="sources-heading">
+      <header class="config-group-head">
+        <h2 id="sources-heading" class="config-group-title">用量来源</h2>
+        <div class="config-actions"><button id="refresh-sources" type="button">刷新</button><button id="add-source" class="primary" type="button">添加设备</button></div>
+      </header>
+      <div class="panel list-panel config-card">
+        <p id="sources-empty" class="muted" hidden>尚无已登记的来源。</p>
+        <ul id="sources-rows" class="source-list" role="list" aria-labelledby="sources-heading" hidden></ul>
+      </div>
     </section>
 
     <section id="editor" aria-labelledby="source-title" hidden>
-      <header class="toolbar sources-header"><h2 id="source-title" class="section-heading" tabindex="-1">添加设备</h2><button id="refresh-editor" type="button">刷新</button></header>
+      <header class="config-group-head">
+        <h2 id="source-title" class="config-group-title" tabindex="-1">添加设备</h2>
+        <button id="refresh-editor" type="button">刷新</button>
+      </header>
       <div id="leave-confirmation" class="confirmation" role="group" aria-labelledby="leave-text" hidden>
         <p id="leave-text">当前有未保存的更改。</p>
-        <div class="controls"><button id="keep-editing" type="button">继续编辑</button><button id="discard-source" type="button">放弃更改并返回</button></div>
+        <div class="config-actions"><button id="keep-editing" type="button">继续编辑</button><button id="discard-source" type="button">放弃更改并返回</button></div>
       </div>
       <ol id="onboarding-steps" class="onboarding-steps" aria-label="设备接入步骤" hidden>
         <li id="step-register">登记来源</li><li id="step-windows">配置 Windows</li><li id="step-receipt">核对首次上报</li>
       </ol>
-      <p id="source-identity" class="muted" hidden>来源 ID <code id="source-id"></code></p>
-      <section id="source-overview" class="panel source-block" aria-labelledby="source-overview-title" hidden>
-        <h3 id="source-overview-title" class="section-heading">来源状态</h3>
-        <dl id="source-facts" class="source-facts"></dl>
-        <a id="local-source-hint" href="../../../settings.html" hidden>打开中心设置</a>
-        <a id="historical-source-hint" href="../dashboard/" hidden>查看此来源的用量</a>
+      <section id="source-overview" class="panel config-card" aria-labelledby="source-overview-title" hidden>
+        <h3 id="source-overview-title" class="section-heading config-card-title">来源状态</h3>
+        <dl id="source-facts" class="config-rows"></dl>
+        <div id="source-identity" class="config-card-body muted" hidden>来源 ID <code id="source-id"></code></div>
+        <div class="config-card-body config-actions" id="source-overview-actions" hidden>
+          <a id="local-source-hint" class="quiet" href="../../../settings.html" hidden>打开中心设置</a>
+          <a id="historical-source-hint" class="quiet" href="../dashboard/" hidden>查看此来源的用量</a>
+          <div id="recovery-tools" hidden><button id="rebuild-source" type="button">确认同源重建</button></div>
+        </div>
       </section>
-      <form id="source-form" class="panel source-block" novalidate>
-        <h3 id="source-form-title" class="section-heading">基本信息</h3>
-        <fieldset id="source-fields" class="form-grid" disabled>
-          <div id="name-field" class="form-field">
+      <form id="source-form" class="panel config-card" novalidate>
+        <h3 id="source-form-title" class="section-heading config-card-title">基本信息</h3>
+        <fieldset id="source-fields" disabled aria-labelledby="source-form-title">
+          <div id="name-field" class="form-field config-row">
             <label for="source-name">来源名称</label>
             <input id="source-name" type="text" autocomplete="off" required>
           </div>
-          <div id="create-credential" class="form-field">
-            <label for="source-digest">上报令牌的 SHA-256 摘要</label>
+          <div id="create-credential" class="form-field config-row">
+            <div><label for="source-digest">上报令牌的 SHA-256 摘要</label><small id="source-digest-hint">在要接入的 Windows 设备生成专用令牌，并粘贴输出的 64 位摘要。</small></div>
             <input id="source-digest" type="password" maxlength="64" autocomplete="off" spellcheck="false" aria-describedby="source-digest-hint">
-            <small id="source-digest-hint" class="muted">在要接入的 Windows 设备上生成专用令牌，只把输出的 64 位摘要粘贴到这里。</small>
           </div>
-          <details id="token-guide" class="full-width"><summary>在设备上生成令牌与摘要</summary><p>在 Windows PowerShell 执行命令。保留此窗口，稍后用其中的令牌配置请求头。</p><pre><code id="token-command">$bytes = New-Object byte[] 32
+          <details id="token-guide" class="config-card-body"><summary>在设备上生成令牌与摘要</summary><p>在 Windows PowerShell 执行命令。保留此窗口，稍后用其中的令牌配置请求头。</p><pre><code id="token-command">$bytes = New-Object byte[] 32
 $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
 try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
 $usageHubToken = [BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
 $sha = [Security.Cryptography.SHA256]::Create()
 try { [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($usageHubToken))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }</code></pre><button type="button" id="copy-command">复制生成命令</button></details>
-          <label id="enabled-field" class="check-row source-check" for="source-enabled">
-            <input id="source-enabled" type="checkbox" checked>
-            允许来源上报
-          </label>
-          <div id="receiver-summary" class="full-width" hidden><p id="saved-receiver"></p><button id="edit-receiver" type="button">更改接收设置</button></div>
-          <fieldset id="receiver-fields" class="form-grid full-width"><legend class="section-heading">中心 OTLP 接收</legend>
-            <div class="form-field"><label for="receiver-host">中心监听 IP</label><input id="receiver-host" type="text" autocomplete="off" spellcheck="false" placeholder="例如 192.0.2.2" required><small>直连填写中心的隧道或局域网 IP。Docker 端口映射可监听 0.0.0.0，同机反向代理可监听回环。</small></div>
-            <div class="form-field"><label for="receiver-port">监听端口</label><input id="receiver-port" type="number" min="1" max="65535" step="1" required></div>
-            <div class="form-field full-width"><label for="receiver-endpoint">设备访问的接收地址</label><input id="receiver-endpoint" type="url" autocomplete="off" spellcheck="false" placeholder="http://192.0.2.2:3494" required><small>填写 Windows 可达的 HTTP(S) 基础地址。Magpie 会自动追加 /v1/traces。</small></div>
+          <div id="enabled-field" class="config-row">
+            <span id="source-enabled-label">允许来源上报</span>
+            <div class="segmented config-switch" role="radiogroup" aria-labelledby="source-enabled-label">
+              <label><input id="source-enabled-off" class="sr-only" type="radio" name="source-enabled"><span>关闭</span></label>
+              <label><input id="source-enabled" class="sr-only" type="radio" name="source-enabled" checked><span>开启</span></label>
+            </div>
+          </div>
+          <div id="receiver-summary" class="config-card-body toolbar" hidden><p id="saved-receiver"></p><button id="edit-receiver" type="button">更改接收设置</button></div>
+          <fieldset id="receiver-fields" aria-labelledby="receiver-title">
+            <h4 id="receiver-title" class="section-heading config-card-body">中心 OTLP 接收</h4>
+            <div class="form-field config-row"><div><label for="receiver-host">中心监听 IP</label><small id="receiver-host-hint">直连填写中心的隧道或局域网 IP。Docker 端口映射可监听 0.0.0.0，同机反向代理可监听回环。</small></div><input id="receiver-host" type="text" autocomplete="off" spellcheck="false" placeholder="例如 192.0.2.2" required aria-describedby="receiver-host-hint"></div>
+            <div class="form-field config-row"><label for="receiver-port">监听端口</label><input id="receiver-port" type="number" min="1" max="65535" step="1" required></div>
+            <div class="form-field config-row"><div><label for="receiver-endpoint">设备访问的接收地址</label><small id="receiver-endpoint-hint">填写 Windows 可达的 HTTP(S) 基础地址。Magpie 会自动追加 /v1/traces。</small></div><input id="receiver-endpoint" type="url" autocomplete="off" spellcheck="false" placeholder="http://192.0.2.2:3494" required aria-describedby="receiver-endpoint-hint"></div>
           </fieldset>
-          <div class="source-actions controls">
+          <div class="config-card-body config-actions">
             <button id="save-source" class="primary" type="submit" disabled>保存来源</button>
           </div>
         </fieldset>
       </form>
-      <p id="receiver-notice" class="notice" role="status"></p>
-      <button id="reload-receiver" type="button" hidden>重新读取中心设置</button>
-      <button id="review-receiver" type="button" hidden>采用最新设置并保留草稿</button>
-      <section id="windows-settings" class="panel source-block" aria-labelledby="windows-title" hidden>
-        <h3 id="windows-title" class="section-heading" tabindex="-1">配置 Windows Magpie</h3><p>中心接收已就绪。在设备的「设置 → 可观测性」填写下列值并开启 OTLP export。</p>
-        <dl id="windows-values" class="windows-values">
-          <dt>Collector</dt><dd>OTLP</dd>
-          <dt>OTLP endpoint</dt><dd><code id="windows-endpoint"></code> <button id="copy-endpoint" type="button">复制地址</button></dd>
-          <dt>OTLP headers</dt><dd><code>Authorization=Bearer%20&lt;本机令牌&gt;</code></dd>
-          <dt>Export metrics</dt><dd>Off</dd>
-          <dt>Request and response content</dt><dd>Metadata only</dd>
-          <dt>Trace agent conversations</dt><dd>按需开启以采集会话用量</dd>
+      <section id="windows-settings" class="panel config-card" aria-labelledby="windows-title" hidden>
+        <h3 id="windows-title" class="section-heading config-card-title" tabindex="-1">配置 Windows Magpie</h3>
+        <div class="config-card-body">在设备的「设置 → 可观测性」开启 OTLP export，并填写下列值。</div>
+        <dl id="windows-values" class="config-rows">
+          <div class="config-row"><dt>Collector</dt><dd>OTLP</dd></div>
+          <div class="config-row"><dt>OTLP endpoint</dt><dd class="config-actions"><code id="windows-endpoint"></code><button id="copy-endpoint" type="button">复制地址</button></dd></div>
+          <div class="config-row"><dt>OTLP headers</dt><dd class="config-actions"><code>Authorization=Bearer%20&lt;本机令牌&gt;</code><button type="button" id="copy-header">复制请求头命令</button></dd></div>
+          <div class="config-row"><dt>Export metrics</dt><dd>Off</dd></div>
+          <div class="config-row"><dt>Request and response content</dt><dd>Metadata only</dd></div>
+          <div class="config-row"><dt>Trace agent conversations</dt><dd>按需开启以采集会话用量</dd></div>
         </dl>
-        <button id="copy-settings" type="button">复制配置清单</button>
-        <p>在生成令牌的 PowerShell 窗口执行命令，再粘贴到 OTLP headers。</p>
-        <pre><code id="header-command">"Authorization=Bearer%20$usageHubToken" | Set-Clipboard</code></pre><button type="button" id="copy-header">复制请求头命令</button>
-        <button id="go-receipt" class="primary" type="button">下一步：核对上报</button>
+        <details id="header-guide" class="config-card-body"><summary>在设备上生成 OTLP 请求头</summary>
+          <p>在生成令牌的 PowerShell 窗口执行命令，再粘贴到 OTLP headers。</p>
+          <pre><code id="header-command">"Authorization=Bearer%20$usageHubToken" | Set-Clipboard</code></pre>
+        </details>
+        <div class="config-card-body config-actions"><button id="copy-settings" type="button">复制配置清单</button><button id="go-receipt" class="primary" type="button">下一步：核对上报</button></div>
       </section>
-      <section id="receipt-settings" class="panel source-block" aria-labelledby="receipt-title" hidden>
-        <h3 id="receipt-title" class="section-heading" tabindex="-1">核对首次上报</h3>
-        <p>在设备上发起一次新调用，再核对上报状态。</p>
-        <div class="controls"><button id="go-windows" type="button">返回 Windows 配置</button>
-        <button id="refresh-receipt" type="button">核对上报状态</button>
+      <section id="receipt-settings" class="panel config-card" aria-labelledby="receipt-title" hidden>
+        <h3 id="receipt-title" class="section-heading config-card-title" tabindex="-1">核对首次上报</h3>
+        <dl class="config-rows">
+          <div class="config-row"><dt>上报状态<small>在设备发起一次新调用，再核对是否已收到用量。</small></dt><dd id="first-receipt" role="status"></dd></div>
+          <div id="received-at-row" class="config-row" hidden><dt>最近接收</dt><dd id="received-at"></dd></div>
+        </dl>
+        <div class="config-card-body config-actions"><button id="go-windows" type="button">返回 Windows 配置</button><button id="refresh-receipt" class="primary" type="button">核对上报状态</button></div>
+      </section>
+      <div id="source-feedback">
+        <p id="copy-notice" class="notice" role="status"></p>
+        <p id="receiver-notice" class="notice" role="status"></p>
+        <p id="source-notice" class="notice" role="status"></p>
+        <div class="config-actions">
+          <button id="reload-receiver" type="button" hidden>重新读取中心设置</button>
+          <button id="review-receiver" type="button" hidden>采用最新设置并保留草稿</button>
         </div>
-        <p id="first-receipt" class="notice" role="status"></p>
-      </section>
-      <p id="copy-notice" class="notice" role="status"></p>
-      <p id="source-notice" class="notice" role="status"></p>
-      <div id="revision-review" class="source-tools" hidden>
-        <p id="latest-source" class="muted"></p>
-        <button id="review-latest" type="button">载入最新修订并保留草稿</button>
+        <div id="revision-review" hidden>
+          <p id="latest-source" class="muted"></p>
+          <button id="review-latest" type="button">载入最新修订并保留草稿</button>
+        </div>
       </div>
-      <section id="source-credentials" class="panel source-block" aria-label="上报凭据" hidden>
-        <h3 class="section-heading">上报凭据</h3>
-        <p id="credential-status" class="muted"></p>
-        <form id="rotation-form" class="controls" novalidate>
-          <div class="form-field">
+      <section id="source-credentials" class="panel config-card" aria-labelledby="credentials-heading" hidden>
+        <h3 id="credentials-heading" class="section-heading config-card-title">上报凭据</h3>
+        <dl class="config-rows"><div class="config-row"><dt>令牌状态</dt><dd id="credential-status"></dd></div></dl>
+        <form id="rotation-form" novalidate>
+          <div class="form-field config-row">
             <label for="rotation-digest">新令牌的 SHA-256 摘要</label>
             <input id="rotation-digest" type="password" maxlength="64" autocomplete="off" spellcheck="false">
           </div>
-          <button id="rotate-source" type="submit">登记新令牌</button>
+          <div class="config-card-body config-actions"><button id="rotate-source" type="submit">登记新令牌</button></div>
         </form>
-        <div class="controls source-actions">
+        <div id="revoke-tools" class="config-card-body config-actions" hidden>
           <button id="revoke-current" type="button" hidden>撤销当前令牌</button>
           <button id="revoke-pending" type="button" hidden>撤销待用令牌</button>
           <button id="revoke-all" type="button" hidden>撤销全部令牌</button>
         </div>
-        <p id="credential-notice" class="notice" role="status"></p>
+        <p id="credential-notice" class="notice config-card-body" role="status"></p>
       </section>
-      <section id="source-connection" class="panel source-block" aria-label="设备接入" hidden>
-        <div class="toolbar"><h3 class="section-heading">设备接入</h3><button id="resume-source" type="button" hidden>配置设备接入</button></div>
-        <p id="connection-state" class="muted" hidden>启用该来源并登记上报凭据后可配置接入。</p>
+      <section id="source-connection" class="panel config-card" aria-labelledby="connection-heading" hidden>
+        <h3 id="connection-heading" class="section-heading config-card-title">设备接入</h3>
+        <div class="config-row"><span id="connection-state">Windows 上报</span><button id="resume-source" type="button" hidden>配置设备接入</button></div>
       </section>
-      <div id="recovery-tools" class="controls source-tools" hidden>
-        <button id="rebuild-source" type="button">确认同源重建</button>
-      </div>
-      <div id="action-confirmation" class="source-tools confirmation" role="group" aria-labelledby="confirmation-text" hidden>
+      <div id="action-confirmation" class="config-card-body confirmation" role="group" aria-labelledby="confirmation-text" hidden>
         <p id="confirmation-text"></p>
-        <div class="controls">
+        <div class="config-actions">
           <button id="confirm-action" type="button">确认</button>
           <button id="cancel-action" type="button">取消</button>
         </div>

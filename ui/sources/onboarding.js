@@ -270,6 +270,7 @@ function createReceiverWizard(element, update, renewManagement) {
         await navigator.clipboard.writeText(value)
         element('copy-notice').textContent = '已复制。'
       } catch {
+        if (target === 'header-command') element('header-guide').open = true
         const selection = window.getSelection()
         const range = document.createRange()
         range.selectNodeContents(content)

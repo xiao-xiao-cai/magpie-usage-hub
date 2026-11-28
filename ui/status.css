@@ -1,13 +1,8 @@
-#notice { margin: 0; font-size: 11px; color: var(--muted); }
-#notice:not(:empty) { margin-block-start: 8px; }
-#status, #collector { margin-block-start: 8px; }
-#collector { border-block-start: 1px solid var(--line); padding-block-start: 8px; }
-#status .section-heading { color: var(--muted); }
-#status dl { margin: 4px 0 0; font-size: 12px; }
-#status dl > div { display: grid; grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr); gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line-2); }
-#status dl > div:last-child { border: 0; }
-#status dt { color: var(--muted); }
-#status dd { margin: 0; overflow-wrap: anywhere; }
+#notice { margin: 0; border-block-start: 0; color: var(--fg-2); }
+#notice:not(:empty) + #status, .diagnostic-details { border-block-start: 1px solid var(--line-2); }
+.diagnostic-details > summary { padding: 9px 14px; cursor: pointer; color: var(--fg-2); }
+.diagnostic-details > summary:hover { color: var(--fg); }
+.diagnostic-details > dl { border-block-start: 1px solid var(--line-2); }
 .revision { font: 11px/1.4 var(--magpie-code, ui-monospace, monospace); }
-.failure { margin: 8px 0 0; border-inline-start: 2px solid var(--accent); padding-inline-start: 8px; }
-@media (max-width: 480px) { #status dl > div { grid-template-columns: minmax(0, 1fr); gap: 3px; } }
+.failure-label { color: var(--amber); margin-inline-start: 8px; font-size: 11px; }
+.failure { margin: 0; color: var(--fg-2); }

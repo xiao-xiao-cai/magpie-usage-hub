@@ -573,6 +573,7 @@ describe('diagnostic page', () => {
     await Bun.sleep(0)
     expect(control('runtime-heading').textContent).toBe('中心服务')
     expect(control('phase').textContent).toBe('等待重试')
+    expect(control('failure-label').hidden).toBe(false)
     expect(control('failure').textContent).toContain('核对中心本机网关')
     expect(control('retry-row').hidden).toBe(false)
     expect(control('dashboard-link').hidden).toBe(true)

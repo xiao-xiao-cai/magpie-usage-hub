@@ -12,34 +12,45 @@
   <script defer src="status.js"></script>
 </head>
 <body>
-  <main class="workspace" aria-label="运行诊断">
+  <main class="workspace config-workspace" aria-label="运行诊断">
     <header class="page-toolbar config-toolbar">
+      <nav class="config-nav" aria-label="配置页面"><a id="sources-link" class="quiet" href="../sources/">来源管理</a><a id="settings-link" class="quiet" href="../../../settings.html">中心设置</a><span class="quiet" aria-current="page">运行诊断</span></nav>
       <a id="dashboard-link" class="quiet" href="../dashboard/">返回用量看板</a>
-      <nav class="segmented" aria-label="配置页面"><a id="sources-link" href="../sources/">来源管理</a><a id="settings-link" href="../../../settings.html">中心设置</a><span aria-current="page">运行诊断</span></nav>
     </header>
-    <section class="panel" aria-labelledby="diagnostics-heading">
-      <header class="toolbar"><h2 id="diagnostics-heading" class="section-heading">运行诊断</h2><button id="refresh" type="button">刷新</button></header>
-      <p id="notice" role="status">正在读取后台状态…</p>
-      <div id="status" aria-labelledby="runtime-heading" hidden>
-        <h3 id="runtime-heading" class="section-heading">插件宿主</h3>
-        <dl>
-          <div><dt>状态</dt><dd id="phase"></dd></div>
-          <div><dt>远端接收</dt><dd id="receiver"></dd></div>
-          <div id="retry-row" hidden><dt>下次重试</dt><dd id="retry"></dd></div>
-          <div><dt>宿主读取的修订</dt><dd id="loaded-revision" class="revision"></dd></div>
-          <div><dt>后台采用的修订</dt><dd id="applied-revision" class="revision"></dd></div>
-        </dl>
-        <p id="failure" class="failure" hidden></p>
-        <section id="collector" aria-labelledby="collector-heading" hidden>
-          <h3 id="collector-heading" class="section-heading">中心本机采集</h3>
-          <dl>
-            <div><dt>采集状态</dt><dd id="collector-phase"></dd></div>
-            <div id="last-sync-row"><dt>最近完成同步</dt><dd id="last-sync"></dd></div>
-            <div id="last-page-row"><dt>最近确认用量页</dt><dd id="last-page"></dd></div>
-            <div id="collector-retry-row" hidden><dt>下次采集重试</dt><dd id="collector-retry"></dd></div>
+    <section class="config-group" aria-labelledby="runtime-heading">
+      <header class="config-group-head"><h2 id="runtime-heading" class="config-group-title">插件宿主</h2><button id="refresh" class="quiet" type="button">刷新</button></header>
+      <div class="panel config-card">
+        <p id="notice" class="config-card-body" role="status">正在读取后台状态…</p>
+        <div id="status" hidden>
+          <dl class="config-rows">
+            <div class="config-row"><dt>运行状态</dt><dd id="phase"></dd></div>
+            <div class="config-row"><dt>远端接收</dt><dd id="receiver"></dd></div>
+            <div class="config-row" id="retry-row" hidden><dt>下次重试</dt><dd id="retry"></dd></div>
           </dl>
-          <p id="collector-failure" class="failure" hidden></p>
-        </section>
+          <details class="diagnostic-details">
+            <summary>详细信息<span id="failure-label" class="failure-label" hidden>有运行异常</span></summary>
+            <dl class="config-rows">
+              <div class="config-row"><dt>宿主读取的修订</dt><dd id="loaded-revision" class="revision"></dd></div>
+              <div class="config-row"><dt>后台采用的修订</dt><dd id="applied-revision" class="revision"></dd></div>
+            </dl>
+            <p id="failure" class="config-card-body failure" hidden></p>
+          </details>
+        </div>
+      </div>
+    </section>
+    <section id="collector" class="config-group" aria-labelledby="collector-heading" hidden>
+      <header class="config-group-head"><h2 id="collector-heading" class="config-group-title">中心本机采集</h2></header>
+      <div class="panel config-card">
+        <dl class="config-rows">
+          <div class="config-row"><dt>采集状态</dt><dd id="collector-phase"></dd></div>
+          <div class="config-row" id="last-sync-row"><dt>最近完成同步</dt><dd id="last-sync"></dd></div>
+          <div class="config-row" id="last-page-row"><dt>最近确认用量页</dt><dd id="last-page"></dd></div>
+          <div class="config-row" id="collector-retry-row" hidden><dt>下次采集重试</dt><dd id="collector-retry"></dd></div>
+        </dl>
+        <details id="collector-details" class="diagnostic-details" hidden>
+          <summary>详细信息<span id="collector-failure-label" class="failure-label" hidden>有采集异常</span></summary>
+          <p id="collector-failure" class="config-card-body failure" hidden></p>
+        </details>
       </div>
     </section>
   </main>

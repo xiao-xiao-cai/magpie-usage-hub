@@ -153,7 +153,9 @@ describe('source management page', () => {
     reopened.reply({ revision: revisionTwo, sources: [{ ...source, id, phase: 'receiving', lastPageAt: '2026-11-27T00:00:00.000Z' }] })
     reopened.click('refresh-receipt')
     await Bun.sleep(0)
-    expect(reopened.control('first-receipt').textContent).toMatch(/已收到用量。最近接收 .+。/)
+    expect(reopened.control('first-receipt').textContent).toBe('已收到用量。')
+    expect(reopened.control('received-at-row').hidden).toBe(false)
+    expect(reopened.control('received-at').textContent).not.toBe('')
   })
 
   test('keeps dashboard filters on all configuration links and opens the wizard on demand', async () => {

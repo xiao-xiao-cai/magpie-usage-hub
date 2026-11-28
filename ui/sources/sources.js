@@ -1,8 +1,11 @@
 const byId = id => document.getElementById(id)
 const adminToken = document.querySelector('meta[name="usage-admin-token"]')?.content
 const form = byId('source-form')
+const formTitle = byId('source-form-title')
 const rotationForm = byId('rotation-form')
 const notice = byId('source-notice')
+const feedback = byId('source-feedback')
+const enabledOff = byId('source-enabled-off')
 const fields = {
   name: byId('source-name'), enabled: byId('source-enabled'), digest: byId('source-digest'), rotation: byId('rotation-digest'),
 }
@@ -60,8 +63,10 @@ function draft() {
 
 function restore(values) {
   for (const [field, value] of Object.entries(values)) {
-    if (field === 'enabled') fields.enabled.checked = value
-    else fields[field].value = value
+    if (field === 'enabled') {
+      fields.enabled.checked = value
+      enabledOff.checked = !value
+    } else fields[field].value = value
   }
 }
 
@@ -160,11 +165,13 @@ function controls() {
     byId('historical-source-hint').href = `../dashboard/${usageHubOptions.dashboardSearch(`?${search}`)}`
   }
   byId('source-overview').hidden = !latest || wizard
-  byId('source-form-title').textContent = wizard ? editing ? '确认中心接收设置' : '登记来源' : '基本信息'
+  formTitle.hidden = wizard && !editing
+  formTitle.textContent = wizard ? editing ? '确认中心接收设置' : '登记来源' : '基本信息'
   byId('source-credentials').hidden = !otlp || wizard
   byId('source-connection').hidden = !otlp || wizard
-  byId('connection-state').hidden = !otlp || canConnect(latest)
-  byId('resume-source').hidden = wizard || !canConnect(latest)
+  const connectable = canConnect(latest)
+  byId('connection-state').textContent = connectable ? 'Windows 上报' : '启用该来源并登记上报凭据后可配置接入。'
+  byId('resume-source').hidden = wizard || !connectable
   byId('resume-source').disabled = blocked || Boolean(confirmation)
   byId('credential-status').textContent = otlp ? credentialLabel(latest) : ''
   rotationForm.hidden = Boolean(credential?.pending && !rotation)
@@ -177,6 +184,8 @@ function controls() {
   byId('revoke-all').hidden = !otlp || !credential?.current || !credential?.pending
   byId('revoke-pending').disabled = blocked || Boolean(confirmation)
   byId('revoke-all').disabled = blocked || Boolean(confirmation)
+  byId('revoke-tools').hidden = !otlp || !(credential?.current || credential?.pending)
+  byId('source-overview-actions').hidden = !local && !historical
   byId('recovery-tools').hidden = !rebuildAllowed(latest)
   byId('rebuild-source').disabled = blocked || Boolean(confirmation)
   byId('action-confirmation').hidden = !confirmation
@@ -190,9 +199,13 @@ function controls() {
     ? `当前已保存为「${latest.name}」，${sourceStatus(latest)}。${otlp ? `${credentialLabel(latest)}。` : ''}`
     : editing ? '当前来源已不存在。请返回来源列表。' : '来源列表已更新，请核对后继续。'
   const receipt = formatTime(latest?.lastPageAt)
-  byId('first-receipt').textContent = receiver.completed
-    ? receipt ? `已收到用量。最近接收 ${receipt}。` : '等待首次上报。' : ''
+  byId('first-receipt').textContent = receiver.completed ? receipt ? '已收到用量。' : '等待首次上报。' : ''
+  byId('received-at-row').hidden = !receipt
+  byId('received-at').textContent = receipt
   receiver.render(busy)
+  const feedbackCard = !form.hidden ? form : receiver.completed
+    ? byId(byId('receipt-settings').hidden ? 'windows-settings' : 'receipt-settings') : byId('source-overview')
+  if (feedback.parentElement !== feedbackCard) feedbackCard.append(feedback)
 }
 
 function showEditor(source = newSource) {
@@ -270,11 +283,16 @@ function sourceFacts(source) {
     if (reason) entries.push(['恢复原因', reason])
     if (source.gap?.missingRows > 0) entries.push(['上次重建缺口', `${source.gap.missingRows.toLocaleString('zh-CN')} 条旧记录`])
   }
-  return entries.flatMap(([label, value]) => ['dt', 'dd'].map((tag, index) => {
-    const field = document.createElement(tag)
-    field.textContent = index ? value : label
-    return field
-  }))
+  return entries.map(([label, value]) => {
+    const row = document.createElement('div')
+    row.className = 'config-row'
+    const term = document.createElement('dt')
+    const description = document.createElement('dd')
+    term.textContent = label
+    description.textContent = value
+    row.append(term, description)
+    return row
+  })
 }
 
 function present(next) {
@@ -441,6 +459,7 @@ function digestFrom(field, feedback = notice) {
 function confirm(body, text, trigger) {
   if (trigger.disabled || trigger.hidden) return
   confirmation = { body, trigger }
+  byId(body.action === 'rebuild' ? 'source-overview' : 'source-credentials').append(byId('action-confirmation'))
   byId('confirmation-text').textContent = text
   controls()
   byId('cancel-action').focus()
@@ -454,7 +473,7 @@ function bindSubmit(target, button, submit) {
   button.addEventListener('click', dispatch)
   target.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.isComposing && event.target.tagName === 'INPUT'
-      && event.target.type !== 'checkbox') dispatch(event)
+      && event.target.type !== 'radio') dispatch(event)
   })
   target.addEventListener('submit', event => {
     event.preventDefault()
@@ -516,6 +535,7 @@ byId('confirm-action').addEventListener('click', () => {
   if (confirmation && !byId('confirm-action').disabled) void mutate(confirmation.body)
 })
 for (const field of Object.values(fields)) field.addEventListener('input', controls)
+enabledOff.addEventListener('input', controls)
 function startWizard(source) {
   if (busy || receiver.busy || !snapshot) return
   if (Object.keys(draft()).length || receiver.active && !receiver.completed) {

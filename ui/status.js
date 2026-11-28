@@ -36,6 +36,7 @@ function showStatus(status) {
   byId('dashboard-link').hidden = !status.ready
   byId('status').hidden = !matches
   if (!matches) {
+    byId('collector').hidden = true
     byId('notice').textContent = '等待宿主读取保存的修订。可刷新，或返回配置页核对设置。'
     return
   }
@@ -63,10 +64,12 @@ function showCollector(status) {
   showTime('last-sync', true, status.lastSyncedAt, '暂无')
   showTime('last-page', true, status.lastPageAt, '暂无')
   showTime('collector-retry', Boolean(status.collectorRetryAt), status.collectorRetryAt, '')
+  byId('collector-details').hidden = !status.collectorFailure
   showFailure('collector-failure', status.collectorFailure, '本机采集暂不可用。请刷新或检查插件日志。')
 }
 
 function showFailure(id, failure, fallback) {
+  byId(`${id}-label`).hidden = !failure
   byId(id).hidden = !failure
   byId(id).textContent = failure ? failureText.get(failure.code) ?? fallback : ''
 }
@@ -92,6 +95,7 @@ async function refresh() {
   } catch {
     if (request === latest) {
       byId('status').hidden = true
+      byId('collector').hidden = true
       byId('dashboard-link').hidden = true
       byId('notice').textContent = '暂时无法读取后台状态。请刷新，或检查 Magpie 插件日志。'
     }
